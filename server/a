@@ -1,0 +1,73 @@
+<script>
+(function () {
+  console.log('[webhook] script carregado');
+
+  const onlyDigits = s => (s||'').replace(/\D/g,'');
+  const getUTMs = () => {
+    const p = new URLSearchParams(location.search);
+    return {
+      utm_source:p.get('utm_source')||'', utm_medium:p.get('utm_medium')||'',
+      utm_campaign:p.get('utm_campaign')||'', utm_term:p.get('utm_term')||'',
+      utm_id:p.get('utm_id')||'', utm_content:p.get('utm_content')||''
+    };
+  };
+  const val = (scope, sels) => {
+    for (const s of sels){ const el = scope.querySelector(s); if (el && 'value' in el) return (el.value||'').trim(); }
+    return '';
+  };
+
+  function handleClick(e){
+    const btn = e.target.closest('button, a, input[type="submit"], [role="button"], .op3-button, [data-submit]');
+    if (!btn) return;
+    const txt = (btn.textContent || btn.value || '').toLowerCase();
+    if (btn.type !== 'submit' && !/confirmar|vaga|acesso|enviar/.test(txt)) return;
+
+    const doc  = btn.ownerDocument || document;
+    const form = btn.closest('form') || doc.querySelector('form');
+    if (!form) return;
+
+    const nome  = val(form,['input[name*="name" i]','input[name*="nome" i]','input[placeholder*="nome" i]']);
+    const email = val(form,['input[type="email"]','input[name*="mail" i]','input[placeholder*="mail" i]']);
+    const whatsapp = onlyDigits(val(form,[
+      'input[type="tel"]','input[name*="whats" i]','input[name*="phone" i]',
+      'input[name*="telefone" i]','input[placeholder*="whats" i]','input[placeholder*="telefone" i]'
+    ]));
+    const r = form.querySelector('input[type="radio"]:checked');
+    const medico = r ? (r.value || r.labels?.[0]?.textContent?.trim() || '') : '';
+
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    console.log('[webhook] capturado', {nome,email,whatsapp,medico,emailOk});
+    if (!(nome && emailOk && whatsapp)) {
+      console.warn('[webhook] campos inválidos/não encontrados', {nome,email,whatsapp});
+      return;
+    }
+
+    const payload = { nome, email, whatsapp, medico, ...getUTMs() };
+fetch("https://services.leadconnectorhq.com/hooks/2vo5xEt2bFDlMoXHEXpj/webhook-trigger/ZgjyTZ0MzoQ5N73OkSwJ", {
+  method: "POST",
+  headers: { "Content-Type": "text/plain" },
+  body: JSON.stringify(payload),
+  keepalive: true
+})
+.then(async res => {
+  const body = await res.text().catch(() => '(sem corpo)');
+  console.log('[webhook] resposta status:', res.status, 'ok:', res.ok, 'corpo:', body);
+})
+.catch(err => console.error('[webhook] erro de rede', err));
+
+    // sem e.preventDefault() -> deixa o OP3 seguir o fluxo dele
+  }
+
+  document.addEventListener('click', handleClick, true);
+
+  // liga também em iframes same-origin, caso o popup esteja dentro de um
+  setInterval(() => {
+    document.querySelectorAll('iframe').forEach(f => {
+      try {
+        const d = f.contentDocument;
+        if (d && !d.__wh_bound) { d.addEventListener('click', handleClick, true); d.__wh_bound = true; }
+      } catch(_) {}
+    });
+  }, 1500);
+})();
+</script>
