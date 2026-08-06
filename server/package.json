@@ -5,7 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts"
+"dev": "tsx watch --no-warnings src/server.ts"
   },
   "keywords": [],
   "author": "",

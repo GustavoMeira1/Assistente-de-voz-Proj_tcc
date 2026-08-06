@@ -21,7 +21,9 @@ export interface LlmAnalysis {
 
 // O resultado completo do endpoint /refine.
 export interface RefineResult {
+  storyId?: number;
   story: UserStory;
-  violations: Violation[]; // regras + LLM juntas
+  violations: Violation[];
   acceptanceCriteria: string[];
+  condicao?: string;
 }
