@@ -1,7 +1,6 @@
 import { db } from "./db.js";
 import type { UserStory, Violation } from "./types.js";
 
-// Inicia uma nova sessão para um participante numa condição, e a torna ativa.
 export function iniciarSessao(participante: string, condicao: string): number {
   const info = db
     .prepare(
@@ -18,7 +17,6 @@ export function iniciarSessao(participante: string, condicao: string): number {
   return sessionId;
 }
 
-// Retorna a sessão ativa (id + condição), ou null se não houver.
 export function sessaoAtiva(): { id: number; condicao: string } | null {
   const estado = db
     .prepare("SELECT session_id FROM estado_atual WHERE id = 1")
@@ -33,7 +31,6 @@ export function sessaoAtiva(): { id: number; condicao: string } | null {
   return sessao ?? null;
 }
 
-// Garante que exista ALGUMA sessão ativa (cria uma avulsa se necessário).
 export function garantirSessao(): { id: number; condicao: string } {
   const ativa = sessaoAtiva();
   if (ativa) return ativa;
@@ -94,7 +91,6 @@ export function listarVersoes(storyId: number) {
     .all(storyId);
 }
 
-// Lista as histórias da sessão (a mais recente primeiro).
 export function listarHistorias(sessionId: number) {
   return db
     .prepare(
@@ -104,8 +100,6 @@ export function listarHistorias(sessionId: number) {
     .all(sessionId);
 }
 
-// Lista os cards existentes de uma sessão em formato resumido (para o LLM
-// decidir mesclagem). Ordem crescente para o contexto ficar estável.
 export function listarCardsResumidos(
   sessionId: number,
 ): { id: number; who: string; what: string; why: string }[] {
@@ -116,8 +110,6 @@ export function listarCardsResumidos(
     .all(sessionId) as { id: number; who: string; what: string; why: string }[];
 }
 
-// Edição manual de um card: atualiza a linha atual E grava uma versão nova
-// marcando que foi uma edição manual (entrada_original explica a origem).
 export function editarHistoria(
   storyId: number,
   story: UserStory,
@@ -125,8 +117,6 @@ export function editarHistoria(
   const existe = db.prepare("SELECT id FROM stories WHERE id = ?").get(storyId);
   if (!existe) return { ok: false };
 
-  // Reaproveita a última versão (violações/critérios) apenas para manter o
-  // histórico coerente; aqui a edição é do texto da story em si.
   db.prepare(
     `INSERT INTO story_versions
        (story_id, entrada_original, who, what, why, violacoes_json, criterios_json,
@@ -153,6 +143,17 @@ export function editarHistoria(
     storyId,
   );
 
+  return { ok: true };
+}
+
+// Exclui uma história e todas as suas versões (para limpar duplicatas).
+export function excluirHistoria(storyId: number): { ok: boolean } {
+  const existe = db.prepare("SELECT id FROM stories WHERE id = ?").get(storyId);
+  if (!existe) return { ok: false };
+
+  db.prepare("DELETE FROM story_versions WHERE story_id = ?").run(storyId);
+  db.prepare("DELETE FROM metrics WHERE story_id = ?").run(storyId);
+  db.prepare("DELETE FROM stories WHERE id = ?").run(storyId);
   return { ok: true };
 }
 

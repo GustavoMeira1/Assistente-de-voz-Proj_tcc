@@ -1,15 +1,12 @@
 import { askOllama } from "./ollama.js";
 import type { UserStory } from "./types.js";
 
-// Uma demanda extraída de um trecho, com a decisão de criar ou atualizar.
 export interface DemandaSegmentada {
-  // "nova" = criar card; ou o id de um card existente para atualizar.
   alvo: number | "nova";
   story: UserStory;
   acceptanceCriteria: string[];
 }
 
-// Resumo de um card já existente, enviado ao LLM para ele decidir a mesclagem.
 export interface CardExistente {
   id: number;
   who: string;
@@ -17,7 +14,6 @@ export interface CardExistente {
   why: string;
 }
 
-// Monta o prompt de segmentação COM contexto dos cards já existentes.
 function montarPrompt(trecho: string, existentes: CardExistente[]): string {
   const listaExistentes =
     existentes.length > 0
@@ -31,34 +27,38 @@ function montarPrompt(trecho: string, existentes: CardExistente[]): string {
           .join("\n")
       : "(nenhum card ainda)";
 
-  return `Você é um assistente que escuta reuniões de daily e mantém um backlog de user stories.
+  return `Você é um assistente que escuta uma reunião de daily e mantém um backlog de user stories. O texto abaixo é a transcrição ACUMULADA da conversa até agora (pode conter frases incompletas, repetições e conversa fiada).
 
 CARDS QUE JÁ EXISTEM NO BACKLOG:
 ${listaExistentes}
 
-Chegou um novo trecho da conversa. Sua tarefa:
-1. Identifique CADA demanda/tarefa distinta mencionada no trecho.
-2. Para cada demanda, decida:
-   - Se ela se refere a um card que JÁ existe acima (mesma pessoa e mesma tarefa, apenas com mais detalhes), marque "alvo" com o número daquele card e reescreva a story JÁ ENRIQUECIDA (combinando o que o card tinha com o detalhe novo).
-   - Se for uma demanda NOVA, marque "alvo" como "nova".
-3. Para cada demanda, monte a story:
-   - who: a PESSOA responsável (nome citado). Vazio se não houver.
-   - what: a capacidade/tarefa.
-   - why: o benefício ou destinatário, se houver. Vazio se não houver.
-4. Sugira de 1 a 3 critérios de aceite observáveis por demanda.
+REGRAS IMPORTANTES:
+- IGNORE saudações e conversa fiada ("bom dia", "vamos à daily", "é isso, obrigado", "então", etc.). Elas NÃO são demandas.
+- Só considere uma demanda quando houver uma TAREFA concreta atribuída a alguém (ex.: criar, validar, revisar, configurar, analisar algo).
+- A transcrição pode ter cortado ou repetido frases; use o contexto de toda a conversa. NÃO crie um card por fragmento — CONSOLIDE fragmentos da mesma demanda em um único card.
+- Uma MESMA PESSOA pode ter VÁRIAS demandas DIFERENTES (tarefas sem relação entre si = cards separados). Ex.: se o Gustavo "cria um relatório" E "revisa o banco de dados", são DOIS cards.
+- MAS detalhes/requisitos de uma MESMA tarefa NÃO são cards separados: eles fazem parte do card daquela tarefa. Ex.: "criar o relatório" + "o relatório deve incluir comparação com mês anterior" + "e ser exportável em PDF" = UM único card (criar o relatório, com esses detalhes no what). NÃO crie um card só para "incluir comparação" nem para "exportar em PDF" — isso é detalhe do relatório.
+- Regra prática: se a frase só faz sentido como complemento de uma tarefa já citada, é DETALHE (mesmo card), não demanda nova.
+- who = a PESSOA responsável por executar (quem "vai fazer"). NÃO confunda com o destinatário: em "criar relatório para o Eduardo", o who é quem cria, e "para o Eduardo" vai no why.
 
-Trecho novo: "${trecho}"
+Para cada demanda REAL, decida:
+- Se corresponde a um card existente acima (mesma tarefa), use "alvo" com o número do card e reescreva a story enriquecida.
+- Se é nova, use "alvo": "nova".
 
-Responda APENAS com um array JSON válido, sem texto antes/depois e sem markdown, neste formato:
+E monte:
+- who: pessoa responsável (vazio se não houver).
+- what: a tarefa (sem "Como fulano"; apenas a ação).
+- why: benefício ou destinatário, se houver (vazio se não houver).
+- acceptanceCriteria: 1 a 3 critérios observáveis.
+
+Transcrição acumulada: "${trecho}"
+
+Responda APENAS com um array JSON válido, sem texto antes/depois e sem markdown:
 [
-  {
-    "alvo": "nova",
-    "story": { "who": "", "what": "", "why": "" },
-    "acceptanceCriteria": [ "" ]
-  }
+  { "alvo": "nova", "story": { "who": "", "what": "", "why": "" }, "acceptanceCriteria": [ "" ] }
 ]
 
-Use o número do card (ex.: "alvo": 3) quando for atualização, ou "nova" quando for demanda nova. Se o trecho não tiver demanda clara, retorne []. Não invente. Escreva em português.`;
+Se não houver nenhuma demanda concreta, retorne []. Não invente. Escreva em português.`;
 }
 
 function extrairArrayJson(texto: string): string {
@@ -70,7 +70,6 @@ function extrairArrayJson(texto: string): string {
   return texto.slice(inicio, fim + 1);
 }
 
-// Segmenta o trecho considerando os cards existentes, devolvendo as decisões.
 export async function segmentarDemandas(
   trecho: string,
   existentes: CardExistente[],
@@ -84,13 +83,11 @@ export async function segmentarDemandas(
     acceptanceCriteria: string[];
   }[];
 
-  // Conjunto de ids válidos, para validar o "alvo" retornado pelo LLM.
   const idsValidos = new Set(existentes.map((c) => c.id));
 
   return parsed
     .filter((d) => d.story && (d.story.what?.trim() || d.story.who?.trim()))
     .map((d) => {
-      // Normaliza o alvo: só aceita id que realmente existe; senão, vira "nova".
       let alvo: number | "nova" = "nova";
       if (typeof d.alvo === "number" && idsValidos.has(d.alvo)) {
         alvo = d.alvo;

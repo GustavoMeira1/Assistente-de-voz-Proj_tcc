@@ -7,6 +7,7 @@ import { decomporSimples } from "./parseSimples.js";
 import { segmentarDemandas } from "./segmentador.js";
 import { transcrever } from "./whisper.js";
 import { inicializarBanco } from "./db.js";
+import { gerarCsvVersoes, gerarCsvHistorias } from "./exportador.js";
 import {
   garantirSessao,
   sessaoAtiva,
@@ -16,6 +17,7 @@ import {
   listarHistorias,
   listarCardsResumidos,
   editarHistoria,
+  excluirHistoria,
   buscarHistoriaComVersoes,
 } from "./repository.js";
 import type { RefineResult, UserStory, Violation } from "./types.js";
@@ -42,7 +44,6 @@ app.get("/test-llm", async () => {
   return { resposta };
 });
 
-// Inicia uma sessão de experimento (participante + condição).
 app.post("/session/start", async (request, reply) => {
   const body = request.body as { participante?: string; condicao?: string };
   if (!body?.participante?.trim()) {
@@ -77,7 +78,6 @@ app.post("/transcribe", async (request, reply) => {
   }
 });
 
-// Refina UMA frase como UMA história (refinamento individual de um card).
 app.post("/refine", async (request, reply) => {
   const body = request.body as { texto?: string; storyId?: number };
 
@@ -128,8 +128,6 @@ app.post("/refine", async (request, reply) => {
   }
 });
 
-// Processa um TRECHO de daily: extrai várias demandas e, para cada uma,
-// cria um card novo OU atualiza um card existente (decisão do LLM).
 app.post("/refine-daily", async (request, reply) => {
   const body = request.body as { texto?: string };
 
@@ -143,7 +141,6 @@ app.post("/refine-daily", async (request, reply) => {
     const sessao = garantirSessao();
     const comAssistente = sessao.condicao === "com_assistente";
 
-    // Condição de controle: sem IA, o trecho vira uma história ingênua.
     if (!comAssistente) {
       const story = decomporSimples(body.texto);
       const storyId = criarHistoria(sessao.id, story);
@@ -162,7 +159,6 @@ app.post("/refine-daily", async (request, reply) => {
       };
     }
 
-    // Envia os cards existentes como contexto para o LLM decidir mesclagem.
     const existentes = listarCardsResumidos(sessao.id);
     const demandas = await segmentarDemandas(body.texto, existentes);
 
@@ -177,7 +173,7 @@ app.post("/refine-daily", async (request, reply) => {
         storyId = criarHistoria(sessao.id, demanda.story);
         acao = "nova";
       } else {
-        storyId = demanda.alvo; // id de card existente validado no segmentador
+        storyId = demanda.alvo;
         acao = "atualizada";
       }
 
@@ -208,7 +204,6 @@ app.post("/refine-daily", async (request, reply) => {
   }
 });
 
-// Edição manual de um card (corrige who/what/why).
 app.put("/stories/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const body = request.body as { who?: string; what?: string; why?: string };
@@ -219,6 +214,16 @@ app.put("/stories/:id", async (request, reply) => {
     why: body.why ?? "",
   });
 
+  if (!resultado.ok) {
+    return reply.status(404).send({ erro: "História não encontrada." });
+  }
+  return { ok: true };
+});
+
+// Exclui uma história (para remover duplicatas ou cards indevidos).
+app.delete("/stories/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const resultado = excluirHistoria(Number(id));
   if (!resultado.ok) {
     return reply.status(404).send({ erro: "História não encontrada." });
   }
@@ -236,6 +241,22 @@ app.get("/stories/:id", async (request, reply) => {
   if (!dados)
     return reply.status(404).send({ erro: "História não encontrada." });
   return dados;
+});
+
+app.get("/export/versoes.csv", async (request, reply) => {
+  const csv = gerarCsvVersoes();
+  reply
+    .header("Content-Type", "text/csv; charset=utf-8")
+    .header("Content-Disposition", 'attachment; filename="versoes.csv"')
+    .send(csv);
+});
+
+app.get("/export/historias.csv", async (request, reply) => {
+  const csv = gerarCsvHistorias();
+  reply
+    .header("Content-Type", "text/csv; charset=utf-8")
+    .header("Content-Disposition", 'attachment; filename="historias.csv"')
+    .send(csv);
 });
 
 const start = async () => {

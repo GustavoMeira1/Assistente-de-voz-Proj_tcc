@@ -22,7 +22,6 @@ interface Versao {
   criada_em: string;
 }
 
-// 'onAbrir' devolve ao App a história e a versão escolhidas para reexibir.
 export function Backlog({
   recarregar,
   storyIdAtual,
@@ -36,11 +35,15 @@ export function Backlog({
   const [expandida, setExpandida] = useState<number | null>(null);
   const [versoes, setVersoes] = useState<Versao[]>([]);
 
-  useEffect(() => {
+  function carregar() {
     fetch("http://localhost:3333/stories")
       .then((r) => r.json())
       .then((d) => setHistorias(d.stories ?? []))
       .catch(() => setHistorias([]));
+  }
+
+  useEffect(() => {
+    carregar();
   }, [recarregar]);
 
   async function alternarDetalhe(id: number) {
@@ -54,10 +57,29 @@ export function Backlog({
       const vs: Versao[] = d.versoes ?? [];
       setVersoes(vs);
       setExpandida(id);
-      // Ao abrir uma história, já reexibe a última versão no painel principal.
       if (vs.length > 0) onAbrir(id, vs[vs.length - 1]);
     } catch {
       setVersoes([]);
+    }
+  }
+
+  // Exclui um card após confirmação.
+  async function excluir(id: number, ev: React.MouseEvent) {
+    ev.stopPropagation(); // não dispara o abrir/expandir do card
+    const ok = window.confirm(
+      `Excluir a história #${id}? Esta ação não pode ser desfeita.`,
+    );
+    if (!ok) return;
+    try {
+      const r = await fetch(`http://localhost:3333/stories/${id}`, {
+        method: "DELETE",
+      });
+      if (r.ok) {
+        if (expandida === id) setExpandida(null);
+        carregar();
+      }
+    } catch {
+      /* silencioso: se falhar, o card permanece */
     }
   }
 
@@ -73,15 +95,24 @@ export function Backlog({
               key={h.id}
               className={`backlog-item ${h.id === storyIdAtual ? "ativa" : ""}`}
             >
-              <button
-                className="backlog-item-btn"
-                onClick={() => alternarDetalhe(h.id)}
-              >
-                <span className="backlog-id">#{h.id}</span>
-                <span className="backlog-what">
-                  {h.what || "(sem descrição)"}
-                </span>
-              </button>
+              <div className="backlog-item-linha">
+                <button
+                  className="backlog-item-btn"
+                  onClick={() => alternarDetalhe(h.id)}
+                >
+                  <span className="backlog-id">#{h.id}</span>
+                  <span className="backlog-what">
+                    {h.what || "(sem descrição)"}
+                  </span>
+                </button>
+                <button
+                  className="backlog-excluir"
+                  title="Excluir história"
+                  onClick={(e) => excluir(h.id, e)}
+                >
+                  ✕
+                </button>
+              </div>
 
               {expandida === h.id && (
                 <div className="versoes">

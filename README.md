@@ -1,67 +1,55 @@
-# Assistente de Voz para Facilitação de User Stories
+# Assistente de Voz para Facilitação de User Stories em Dailies
 
 Protótipo de TCC que investiga o uso de um assistente de voz como ferramenta de
-apoio à facilitação de *user stories* em metodologias ágeis. O sistema atua como
-mediador em sessões de *refinement*, guiando a elicitação de **who/what/why**,
-sugerindo critérios de aceite e verificando heurísticas de qualidade
-(**INVEST** e **QUS**) por meio de um **motor híbrido** (regras determinísticas
-+ LLM).
+apoio à facilitação de _user stories_ em metodologias ágeis. O assistente escuta
+(ou recebe por texto) trechos de uma reunião de _daily_ e transforma a conversa
+em um backlog estruturado: identifica múltiplas demandas em uma fala, cria ou
+atualiza cards automaticamente, estrutura cada um em **who/what/why**, verifica
+qualidade (**INVEST/QUS**) por um **motor híbrido** (regras + LLM) e registra
+tudo para análise.
 
-> Estado atual: **Fase 1 concluída** — o "cérebro" em texto puro está funcional
-> de ponta a ponta. A camada de voz (Fase 2) está em desenvolvimento.
+> Estado atual: **Fase 3 concluída** — o instrumento de pesquisa está completo
+> (captura por voz, backlog persistente, modo daily com mesclagem, sessões
+> com/sem assistente, export de dados). Pendentes: captura contínua ao vivo e
+> execução do experimento.
 
 ---
 
 ## Arquitetura
 
-O sistema é composto por peças independentes que rodam localmente (sem custo de
-tokens/créditos):
+Todas as peças rodam localmente, sem custo de tokens/créditos:
 
-| Peça | Tecnologia | Papel |
-|------|-----------|-------|
-| Backend | Node + TypeScript + Fastify | Orquestra o fluxo e expõe a API |
-| LLM | Ollama + Qwen2.5 7B (GPU) | Decompõe a frase e julga o semântico |
-| Regras | TypeScript puro (estilo AQUSA) | Verifica defeitos sintáticos/objetivos |
-| ASR | faster-whisper (CPU) | Transcreve voz em texto *(Fase 2)* |
-| TTS | SpeechSynthesis do navegador | Retorno auditivo *(Fase 2)* |
-| Frontend | React + TypeScript + Vite | Interface multimodal *(Fase 2)* |
+| Peça     | Tecnologia                                 | Papel                                  |
+| -------- | ------------------------------------------ | -------------------------------------- |
+| Frontend | React + TypeScript + Vite                  | Interface multimodal (voz + tela)      |
+| Backend  | Node + TypeScript + Fastify                | Orquestra o fluxo e expõe a API        |
+| LLM      | Ollama + Qwen2.5 7B (GPU via Vulkan)       | Segmenta demandas, estrutura e julga   |
+| Regras   | TypeScript puro (estilo AQUSA)             | Verifica defeitos sintáticos/objetivos |
+| ASR      | faster-whisper (serviço Python/Flask, CPU) | Transcreve voz em texto                |
+| TTS      | SpeechSynthesis do navegador               | Leitura por voz sob demanda            |
+| Banco    | SQLite nativo do Node (`node:sqlite`)      | Persistência e histórico de versões    |
 
 ### O motor híbrido
 
-O coração do projeto. A análise de uma história é feita em duas metades
-complementares, e é isso que dá ao sistema tanto **cobertura** quanto
-**rastreabilidade**:
+A análise de qualidade combina duas metades complementares, e cada violação
+carrega o campo `origem` (`"regra"` ou `"llm"`) para permitir medir a
+contribuição de cada uma:
 
-1. **Metade determinística (regras).** Funções puras que checam o que não exige
-   IA: template "Como/eu quero/para" completo, atomicidade (indícios de história
-   dupla via conectores como "e"/"ou"), tamanho mínimo e vocabulário vago que
-   fere a testabilidade. É 100% explicável — cada violação aponta exatamente a
-   regra ferida.
+1. **Regras determinísticas** — funções puras que checam template completo,
+   atomicidade, tamanho mínimo e vocabulário vago (normalização de acentos e
+   comparação por radical para robustez em português). 100% explicável.
+2. **LLM** — julga o semântico/pragmático (benefício real, ambiguidade,
+   testabilidade) e sugere critérios de aceite.
 
-2. **Metade do LLM.** Decompõe uma frase livre em who/what/why e julga o que as
-   regras não conseguem: se o benefício é um valor real, se há ambiguidade
-   semântica, se a capacidade é testável na prática. Também sugere critérios de
-   aceite observáveis.
+### O fluxo da daily (modo principal)
 
-Toda violação carrega o campo `origem` (`"regra"` ou `"llm"`), permitindo medir,
-no estudo empírico, quanto cada metade contribuiu para a detecção de defeitos.
-
-> **Por que híbrido?** Durante o desenvolvimento, uma regra baseada em lista de
-> termos deixou passar "rápida" porque a lista continha apenas "rápido"
-> (flexão de gênero). Esse caso ilustra a limitação fundamental das regras e
-> justifica a presença do LLM para os casos linguísticos e semânticos que uma
-> lista fixa nunca cobre. (A regra foi depois corrigida com normalização de
-> acentos e comparação por radical.)
-
----
-
-## Pré-requisitos
-
-- **Node.js** 20+ (testado com v20.12.0)
-- **Ollama** instalado, com o modelo baixado: `ollama pull qwen2.5:7b`
-- **Python** 3.11 (para a Fase 2 — ASR)
-- GPU compatível para o Ollama (testado em AMD RX 5500 XT via Vulkan, 100% GPU,
-  ~3s por resposta)
+1. Um trecho da conversa chega (voz transcrita ou texto colado).
+2. O LLM **segmenta**: identifica cada demanda distinta no trecho.
+3. Para cada demanda, decide **criar card novo** ou **atualizar um existente**
+   (recebe a lista de cards atuais como contexto; ids inválidos viram "nova").
+4. Estrutura em who/what/why (o `who` é a pessoa responsável citada na fala).
+5. Roda o motor de qualidade e salva cada card como versão no backlog.
+6. O usuário pode reabrir, ouvir por voz e **editar manualmente** para corrigir.
 
 ---
 
@@ -69,107 +57,96 @@ no estudo empírico, quanto cada metade contribuiu para a detecção de defeitos
 
 ```
 tcc-assistente/
-├── venv/                     # ambiente virtual Python (ASR)
-├── test_whisper.py           # teste isolado do faster-whisper
-└── server/
-    ├── package.json
-    ├── tsconfig.json
+├── iniciar.bat / parar.bat       # sobem/encerram os serviços de uma vez
+├── venv/                         # ambiente Python (ASR)
+├── whisper-service/
+│   └── whisper_service.py        # serviço Flask de transcrição (porta 5001)
+├── server/                       # backend Node (porta 3333)
+│   └── src/
+│       ├── server.ts             # servidor e rotas
+│       ├── ollama.ts             # comunicação com o LLM
+│       ├── segmentador.ts        # extrai N demandas de um trecho (daily)
+│       ├── rules.ts              # regras determinísticas (AQUSA)
+│       ├── parseSimples.ts       # decomposição ingênua (condição de controle)
+│       ├── repository.ts         # operações de banco (sessões, versões, edição)
+│       ├── exportador.ts         # geração dos CSVs
+│       ├── db.ts                 # esquema SQLite
+│       └── types.ts              # tipos compartilhados
+└── web/                          # frontend React (porta 5173)
     └── src/
-        ├── server.ts         # servidor Fastify e rotas (/health, /test-llm, /refine)
-        ├── ollama.ts         # comunicação com o LLM local + análise em JSON
-        ├── rules.ts          # regras determinísticas (estilo AQUSA)
-        ├── types.ts          # tipos compartilhados (UserStory, Violation, etc.)
-        └── test-rules.ts     # teste isolado das regras
+        ├── App.tsx               # tela principal (modos daily e individual)
+        ├── Backlog.tsx           # lista de histórias + versões
+        ├── ExportBar.tsx         # botões de download dos CSVs
+        ├── useGravador.ts        # captura de áudio do microfone
+        ├── useFala.ts            # síntese de voz (TTS)
+        └── index.css             # estilos
 ```
-
-### O que cada arquivo faz
-
-- **`server.ts`** — sobe o servidor na porta 3333 e define as rotas. A rota
-  principal `/refine` executa a sequência do motor híbrido: o LLM quebra a frase
-  → as regras analisam a história quebrada → as violações das duas fontes são
-  unidas.
-- **`ollama.ts`** — `askOllama()` envia um prompt ao modelo local;
-  `analisarComLlm()` monta o prompt de análise, chama o modelo, limpa a resposta
-  (remove eventuais cercas de markdown) e faz o *parse* do JSON estruturado.
-- **`rules.ts`** — cada critério é uma função separada (`verificarTemplate`,
-  `verificarAtomicidade`, `verificarTamanho`, `verificarTermosVagos`), orquestradas
-  por `aplicarRegras()`. Usa normalização de acentos e comparação por radical
-  para robustez em português.
-- **`types.ts`** — contratos de dados que circulam pelo sistema.
 
 ---
 
 ## Como rodar
 
-### 1. Backend (Node)
+**Opção rápida:** duplo-clique em `iniciar.bat` (sobe Whisper, backend e
+frontend em janelas separadas). O Ollama sobe sozinho com o Windows.
 
-```bash
-cd server
-npm install          # apenas na primeira vez
-npm run dev          # sobe o servidor com recarga automática (tsx watch)
-```
+**Manual (um terminal por serviço):**
 
-O servidor sobe em `http://localhost:3333`.
+1. Whisper: `cd whisper-service` → `python whisper_service.py`
+2. Backend: `cd server` → `npm run dev`
+3. Frontend: `cd web` → `npm run dev`
+4. Acessar `http://localhost:5173`
 
-### 2. LLM (Ollama)
-
-O serviço do Ollama sobe sozinho após a instalação. Confirme o modelo:
-
-```bash
-ollama list          # deve listar qwen2.5:7b
-```
+Pré-requisitos: Node 22+, Python 3.11, Ollama com `qwen2.5:7b`.
 
 ---
 
-## Endpoints (Fase 1)
+## Principais endpoints
 
-| Método | Rota | Descrição |
-|--------|------|-----------|
-| GET | `/health` | Confirma que o servidor está no ar |
-| GET | `/test-llm` | Testa a conexão com o LLM |
-| POST | `/refine` | Analisa uma frase e devolve história + violações + critérios de aceite |
+| Método | Rota                    | Descrição                                           |
+| ------ | ----------------------- | --------------------------------------------------- |
+| POST   | `/session/start`        | Inicia sessão (participante + condição)             |
+| GET    | `/session/current`      | Sessão ativa                                        |
+| POST   | `/transcribe`           | Áudio → texto (via Whisper)                         |
+| POST   | `/refine`               | Analisa uma frase como uma história                 |
+| POST   | `/refine-daily`         | Extrai N demandas de um trecho; cria/atualiza cards |
+| PUT    | `/stories/:id`          | Edição manual de um card                            |
+| GET    | `/stories`              | Backlog da sessão ativa                             |
+| GET    | `/stories/:id`          | História com histórico de versões                   |
+| GET    | `/export/versoes.csv`   | Dados detalhados (uma linha por versão)             |
+| GET    | `/export/historias.csv` | Resumo (uma linha por história)                     |
 
-### Exemplo de uso do `/refine`
+---
 
-Requisição:
+## O experimento (desenho)
 
-```json
-{ "texto": "Como gerente eu quero exportar e imprimir relatórios de forma rápida para acompanhar a equipe" }
-```
+Estudo intra-sujeitos comparando duas condições:
 
-Resposta (resumida):
+- **Com assistente:** daily processada pelo assistente (segmentação, motor de
+  qualidade, voz).
+- **Sem assistente (controle):** mesma atividade sem apoio de IA (decomposição
+  ingênua, sem violações/critérios), registrando o que a pessoa produz sozinha.
 
-```json
-{
-  "story": { "who": "gerente", "what": "exportar e imprimir relatórios de forma rápida", "why": "para acompanhar a equipe" },
-  "violations": [
-    { "criterio": "Atomicidade (Small)", "origem": "regra", "mensagem": "..." },
-    { "criterio": "Testabilidade (Testable)", "origem": "regra", "mensagem": "..." },
-    { "criterio": "INVEST", "origem": "llm", "mensagem": "..." }
-  ],
-  "acceptanceCriteria": [
-    "O sistema deve permitir exportar relatórios em menos de 5 segundos.",
-    "..."
-  ]
-}
-```
+Cada sessão isola participante + condição. Métricas coletadas: completude
+who/what/why, violações por origem (regra/IA), número de versões, e material
+para usabilidade/aceitação. Os CSVs alimentam a análise estatística.
 
 ---
 
 ## Roadmap
 
-- [x] **Fase 0** — Setup (Node, LLM em GPU, ASR validado)
-- [x] **Fase 1** — Cérebro em texto puro (motor híbrido completo)
-- [ ] **Fase 2** — Camada de voz (ASR na entrada, TTS na saída, frontend multimodal)
-- [ ] **Fase 3** — Backlog Kanban + logging + modo controle (assistente on/off)
+- [x] **Fase 0** — Setup (Node, LLM em GPU, ASR)
+- [x] **Fase 1** — Motor híbrido em texto
+- [x] **Fase 2** — Camada de voz (ASR, TTS, frontend multimodal)
+- [x] **Fase 3** — Instrumento de pesquisa (banco, daily+mesclagem, sessões, export)
+- [ ] **Captura contínua ao vivo** — gravar em blocos e alimentar a daily automaticamente
 - [ ] **Fase 4** — Piloto e ajustes
-- [ ] **Fase 5** — Sessões do experimento e análise dos dados
+- [ ] **Fase 5** — Sessões do experimento e análise
 
 ---
 
 ## Referências principais
 
-- LUCASSEN et al. (2016) — *Quality User Story framework and tool* (QUS/AQUSA)
-- COHN (2004) — *User Stories Applied*
-- SCHWABER; SUTHERLAND (2020) — *The Scrum Guide*
-- COHEN; GIANGOLA; BALOGH (2004) — *Voice User Interface Design*
+- LUCASSEN et al. (2016) — _Quality User Story framework and tool_ (QUS/AQUSA)
+- COHN (2004) — _User Stories Applied_
+- SCHWABER; SUTHERLAND (2020) — _The Scrum Guide_
+- COHEN; GIANGOLA; BALOGH (2004) — _Voice User Interface Design_

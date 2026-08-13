@@ -1,7 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useGravador } from "./useGravador";
+import { useGravadorContinuo } from "./useGravadorContinuo";
 import { useFala } from "./useFala";
 import { Backlog } from "./Backlog";
+import { ExportBar } from "./ExportBar";
 
 interface UserStory {
   who: string;
@@ -173,7 +175,11 @@ export default function App() {
   const [recarregarBacklog, setRecarregarBacklog] = useState(0);
   const [vendoSalva, setVendoSalva] = useState(false);
 
-  // Edição da história aberta no modo individual.
+  const [statusAoVivo, setStatusAoVivo] = useState("");
+  const [transcricaoAoVivo, setTranscricaoAoVivo] = useState("");
+  const transcricaoRef = useRef("");
+  const processandoRef = useRef(false);
+
   const [editandoInd, setEditandoInd] = useState(false);
   const [edWho, setEdWho] = useState("");
   const [edWhat, setEdWhat] = useState("");
@@ -193,6 +199,58 @@ export default function App() {
   const fala = useFala();
 
   const comAssistente = sessaoAtiva?.condicao !== "sem_assistente";
+
+  // Reprocessa o texto acumulado inteiro e atualiza os cards da daily.
+  async function reprocessarAcumulado() {
+    if (!transcricaoRef.current.trim()) return;
+    try {
+      const respD = await fetch("http://localhost:3333/refine-daily", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texto: transcricaoRef.current }),
+      });
+      if (respD.ok) {
+        const dadosD = await respD.json();
+        const novas: HistoriaDaily[] = dadosD.historias ?? [];
+        if (novas.length > 0) setHistoriasDaily(novas);
+        setRecarregarBacklog((n) => n + 1);
+      }
+    } catch {
+      /* silencioso */
+    }
+  }
+
+  // Durante a daily ao vivo: apenas transcreve e ACUMULA o texto.
+  // Os cards NÃO são gerados durante a fala — só ao encerrar (processamento
+  // único do texto completo), o que elimina duplicações por corrida.
+  async function processarBlocoAoVivo(audio: Blob) {
+    try {
+      setStatusAoVivo("Transcrevendo…");
+      const form = new FormData();
+      form.append("audio", audio, "bloco.webm");
+      const respT = await fetch("http://localhost:3333/transcribe", {
+        method: "POST",
+        body: form,
+      });
+      if (respT.ok) {
+        const dadosT = (await respT.json()) as { texto: string };
+        const trecho = (dadosT.texto ?? "").trim();
+        if (trecho) {
+          transcricaoRef.current = (
+            transcricaoRef.current +
+            " " +
+            trecho
+          ).trim();
+          setTranscricaoAoVivo(transcricaoRef.current);
+        }
+      }
+      setStatusAoVivo("Ouvindo…");
+    } catch {
+      setStatusAoVivo("Ouvindo…");
+    }
+  }
+
+  const gravadorAoVivo = useGravadorContinuo(processarBlocoAoVivo);
 
   useEffect(() => {
     fetch("http://localhost:3333/session/current")
@@ -224,6 +282,8 @@ export default function App() {
       setTexto("");
       setResultado(null);
       setHistoriasDaily([]);
+      transcricaoRef.current = "";
+      setTranscricaoAoVivo("");
       setStoryId(null);
       setVendoSalva(false);
       setEditandoInd(false);
@@ -249,9 +309,14 @@ export default function App() {
       });
       if (!resp.ok) throw new Error(`servidor respondeu ${resp.status}`);
       const dados = await resp.json();
-      setHistoriasDaily(dados.historias ?? []);
+      const novas: HistoriaDaily[] = dados.historias ?? [];
+      setHistoriasDaily((atuais) => {
+        const mapa = new Map(atuais.map((h) => [h.storyId, h]));
+        for (const nh of novas) mapa.set(nh.storyId, nh);
+        return Array.from(mapa.values());
+      });
       setRecarregarBacklog((n) => n + 1);
-      if ((dados.historias ?? []).length === 0) {
+      if (novas.length === 0) {
         setErro("Nenhuma demanda foi identificada neste trecho.");
       }
     } catch (e) {
@@ -307,6 +372,35 @@ export default function App() {
     }
   }
 
+  async function alternarAoVivo() {
+    setErro(null);
+    if (gravadorAoVivo.gravandoAoVivo) {
+      // Encerra a captura. Aguarda o último bloco ser transcrito e então
+      // processa o texto COMPLETO uma única vez (gera todos os cards de vez).
+      gravadorAoVivo.parar();
+      setCarregando(true);
+      setStatusAoVivo("Transcrevendo o trecho final…");
+      // Espera para o último bloco de áudio terminar de transcrever.
+      setTimeout(async () => {
+        setStatusAoVivo("Gerando o backlog a partir da conversa…");
+        await reprocessarAcumulado();
+        setStatusAoVivo("Concluído. Backlog gerado.");
+        setCarregando(false);
+      }, 3000);
+    } else {
+      try {
+        transcricaoRef.current = "";
+        setTranscricaoAoVivo("");
+        setHistoriasDaily([]);
+        setStatusAoVivo("Ouvindo… (os cards aparecem ao encerrar)");
+        await gravadorAoVivo.iniciar();
+      } catch {
+        setErro("Não foi possível acessar o microfone.");
+        setStatusAoVivo("");
+      }
+    }
+  }
+
   function novaHistoria() {
     fala.parar();
     setTexto("");
@@ -318,7 +412,6 @@ export default function App() {
     setEditandoInd(false);
   }
 
-  // Salva edição (usada tanto pelo card da daily quanto pelo modo individual).
   async function salvarEdicao(idHistoria: number, story: UserStory) {
     const resp = await fetch(`http://localhost:3333/stories/${idHistoria}`, {
       method: "PUT",
@@ -332,7 +425,6 @@ export default function App() {
     setRecarregarBacklog((n) => n + 1);
   }
 
-  // Inicia a edição da história aberta no modo individual.
   function abrirEdicaoIndividual() {
     if (!resultado) return;
     setEdWho(resultado.story.who);
@@ -356,8 +448,6 @@ export default function App() {
         },
       );
       if (!resp.ok) throw new Error(`servidor respondeu ${resp.status}`);
-
-      // Deu certo: atualiza a tela e o backlog.
       setResultado({ ...resultado, story: novaStory });
       setEditandoInd(false);
       setRecarregarBacklog((n) => n + 1);
@@ -460,6 +550,8 @@ export default function App() {
           )}
         </section>
 
+        <ExportBar />
+
         {comAssistente && (
           <div className="modo-tabs">
             <button
@@ -483,10 +575,45 @@ export default function App() {
           </div>
         )}
 
+        {modo === "daily" && comAssistente && (
+          <section className="ao-vivo">
+            <div className="ao-vivo-topo">
+              <button
+                className={
+                  gravadorAoVivo.gravandoAoVivo
+                    ? "aovivo-btn gravando"
+                    : "aovivo-btn"
+                }
+                onClick={alternarAoVivo}
+                disabled={carregando}
+              >
+                {gravadorAoVivo.gravandoAoVivo
+                  ? "⏹ Encerrar daily ao vivo"
+                  : "🔴 Iniciar daily ao vivo"}
+              </button>
+              {statusAoVivo && (
+                <span className="ao-vivo-status">{statusAoVivo}</span>
+              )}
+            </div>
+            {gravadorAoVivo.gravandoAoVivo && (
+              <p className="dica" style={{ marginTop: 8 }}>
+                Fale naturalmente. O assistente transcreve durante a fala e gera
+                todos os cards de uma vez quando você encerrar.
+              </p>
+            )}
+            {transcricaoAoVivo && (
+              <div className="ao-vivo-transcricoes">
+                <p className="versoes-titulo">Transcrição acumulada</p>
+                <p className="ao-vivo-trecho">"{transcricaoAoVivo}"</p>
+              </div>
+            )}
+          </section>
+        )}
+
         <section className="composer">
           <label htmlFor="entrada">
             {modo === "daily" && comAssistente
-              ? "Cole ou fale um trecho da daily — o assistente extrai as demandas"
+              ? "Ou cole/fale um trecho da daily manualmente"
               : comAssistente
                 ? "Descreva a história em uma frase"
                 : "Escreva a user story (formato: Como… eu quero… para…)"}
@@ -507,9 +634,11 @@ export default function App() {
               <button
                 className={gravando ? "mic gravando" : "mic"}
                 onClick={alternarGravacao}
-                disabled={transcrevendo || carregando}
+                disabled={
+                  transcrevendo || carregando || gravadorAoVivo.gravandoAoVivo
+                }
               >
-                {gravando ? "● Parar e transcrever" : "🎤 Gravar"}
+                {gravando ? "● Parar e transcrever" : "🎤 Gravar trecho"}
               </button>
             )}
             <button
@@ -519,7 +648,7 @@ export default function App() {
               {carregando
                 ? "Processando…"
                 : modo === "daily" && comAssistente
-                  ? "Processar trecho da daily"
+                  ? "Processar trecho"
                   : comAssistente
                     ? "Analisar história"
                     : "Salvar história"}
@@ -546,11 +675,12 @@ export default function App() {
           <section className="resultado">
             <div className="painel">
               <h2>
-                Demandas identificadas
+                Demandas no backlog
                 <span className="contagem">{historiasDaily.length}</span>
               </h2>
               <p className="dica" style={{ marginTop: 0 }}>
-                Os cards abaixo já estão no backlog. Use "editar" para corrigir.
+                Os cards abaixo já estão no backlog. Use "editar" para corrigir,
+                ou o ✕ no backlog para excluir duplicatas.
               </p>
               <div className="lista-daily">
                 {historiasDaily.map((h) => (
