@@ -23,12 +23,12 @@ interface RefineResult {
   condicao?: string;
 }
 
-// Uma história extraída da daily (mesmo formato de RefineResult, sem condicao).
 interface HistoriaDaily {
   storyId: number;
   story: UserStory;
   violations: Violation[];
   acceptanceCriteria: string[];
+  acao: "nova" | "atualizada";
 }
 
 interface VersaoBanco {
@@ -93,38 +93,75 @@ function BotaoAudio({
   );
 }
 
-// Card compacto para exibir cada história extraída da daily.
-function CardDaily({ h }: { h: HistoriaDaily }) {
+function CardDaily({
+  h,
+  onSalvarEdicao,
+}: {
+  h: HistoriaDaily;
+  onSalvarEdicao: (storyId: number, story: UserStory) => Promise<void>;
+}) {
+  const [editando, setEditando] = useState(false);
+  const [who, setWho] = useState(h.story.who);
+  const [what, setWhat] = useState(h.story.what);
+  const [why, setWhy] = useState(h.story.why);
+  const [salvando, setSalvando] = useState(false);
+
+  async function salvar() {
+    setSalvando(true);
+    await onSalvarEdicao(h.storyId, { who, what, why });
+    setSalvando(false);
+    setEditando(false);
+  }
+
   return (
     <div className="card-daily">
-      <div className="card-daily-story">
-        <span className="mini-rotulo">Como</span> {h.story.who || "—"}{" "}
-        <span className="mini-rotulo">quero</span> {h.story.what || "—"}{" "}
-        {h.story.why && (
-          <>
-            <span className="mini-rotulo">para</span> {h.story.why}
-          </>
-        )}
-      </div>
       <div className="card-daily-meta">
         <span className="card-daily-id">#{h.storyId}</span>
+        <span className={h.acao === "nova" ? "badge-nova" : "badge-atualizada"}>
+          {h.acao === "nova" ? "novo card" : "card atualizado"}
+        </span>
         {h.violations.length > 0 && (
           <span className="card-daily-viol">
             {h.violations.length} ponto(s) de atenção
           </span>
         )}
-        {h.acceptanceCriteria.length > 0 && (
-          <span className="card-daily-crit">
-            {h.acceptanceCriteria.length} critério(s)
-          </span>
-        )}
+        <button className="editar-link" onClick={() => setEditando((e) => !e)}>
+          {editando ? "cancelar" : "editar"}
+        </button>
       </div>
+
+      {editando ? (
+        <div className="card-edicao">
+          <label>Como (quem)</label>
+          <input value={who} onChange={(e) => setWho(e.target.value)} />
+          <label>eu quero (o quê)</label>
+          <input value={what} onChange={(e) => setWhat(e.target.value)} />
+          <label>para (benefício)</label>
+          <input value={why} onChange={(e) => setWhy(e.target.value)} />
+          <button
+            className="salvar-edicao"
+            onClick={salvar}
+            disabled={salvando}
+          >
+            {salvando ? "Salvando…" : "Salvar correção"}
+          </button>
+        </div>
+      ) : (
+        <div className="card-daily-story">
+          <span className="mini-rotulo">Como</span> {h.story.who || "—"}{" "}
+          <span className="mini-rotulo">quero</span> {h.story.what || "—"}{" "}
+          {h.story.why && (
+            <>
+              <span className="mini-rotulo">para</span> {h.story.why}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 export default function App() {
-  // Modo de trabalho: 'daily' (extrai várias) ou 'individual' (refina uma).
   const [modo, setModo] = useState<"daily" | "individual">("daily");
 
   const [texto, setTexto] = useState("");
@@ -136,7 +173,13 @@ export default function App() {
   const [recarregarBacklog, setRecarregarBacklog] = useState(0);
   const [vendoSalva, setVendoSalva] = useState(false);
 
-  // Sessão de experimento.
+  // Edição da história aberta no modo individual.
+  const [editandoInd, setEditandoInd] = useState(false);
+  const [edWho, setEdWho] = useState("");
+  const [edWhat, setEdWhat] = useState("");
+  const [edWhy, setEdWhy] = useState("");
+  const [salvandoInd, setSalvandoInd] = useState(false);
+
   const [participante, setParticipante] = useState("");
   const [condicao, setCondicao] = useState<"com_assistente" | "sem_assistente">(
     "com_assistente",
@@ -183,6 +226,7 @@ export default function App() {
       setHistoriasDaily([]);
       setStoryId(null);
       setVendoSalva(false);
+      setEditandoInd(false);
       setErro(null);
       setRecarregarBacklog((n) => n + 1);
     } catch {
@@ -190,7 +234,6 @@ export default function App() {
     }
   }
 
-  // MODO DAILY: extrai várias histórias de um trecho de conversa.
   async function processarDaily(textoParaProcessar?: string) {
     const alvo = textoParaProcessar ?? texto;
     if (!alvo.trim()) return;
@@ -218,7 +261,6 @@ export default function App() {
     }
   }
 
-  // MODO INDIVIDUAL: refina uma única história (fluxo antigo).
   async function analisar(textoParaAnalisar?: string) {
     const alvo = textoParaAnalisar ?? texto;
     if (!alvo.trim()) return;
@@ -226,6 +268,7 @@ export default function App() {
     setErro(null);
     setVendoSalva(false);
     setHistoriasDaily([]);
+    setEditandoInd(false);
     try {
       const resp = await fetch("http://localhost:3333/refine", {
         method: "POST",
@@ -244,7 +287,6 @@ export default function App() {
     }
   }
 
-  // Ação principal do botão, depende do modo atual.
   async function acaoPrincipal(textoAlvo?: string) {
     if (modo === "daily") await processarDaily(textoAlvo);
     else await analisar(textoAlvo);
@@ -273,6 +315,61 @@ export default function App() {
     setStoryId(null);
     setErro(null);
     setVendoSalva(false);
+    setEditandoInd(false);
+  }
+
+  // Salva edição (usada tanto pelo card da daily quanto pelo modo individual).
+  async function salvarEdicao(idHistoria: number, story: UserStory) {
+    const resp = await fetch(`http://localhost:3333/stories/${idHistoria}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(story),
+    });
+    if (!resp.ok) throw new Error("falha ao salvar");
+    setHistoriasDaily((lista) =>
+      lista.map((h) => (h.storyId === idHistoria ? { ...h, story } : h)),
+    );
+    setRecarregarBacklog((n) => n + 1);
+  }
+
+  // Inicia a edição da história aberta no modo individual.
+  function abrirEdicaoIndividual() {
+    if (!resultado) return;
+    setEdWho(resultado.story.who);
+    setEdWhat(resultado.story.what);
+    setEdWhy(resultado.story.why);
+    setEditandoInd(true);
+  }
+
+  async function salvarEdicaoIndividual() {
+    if (!resultado?.storyId) return;
+    setSalvandoInd(true);
+    setErro(null);
+    try {
+      const novaStory: UserStory = { who: edWho, what: edWhat, why: edWhy };
+      const resp = await fetch(
+        `http://localhost:3333/stories/${resultado.storyId}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(novaStory),
+        },
+      );
+      if (!resp.ok) throw new Error(`servidor respondeu ${resp.status}`);
+
+      // Deu certo: atualiza a tela e o backlog.
+      setResultado({ ...resultado, story: novaStory });
+      setEditandoInd(false);
+      setRecarregarBacklog((n) => n + 1);
+    } catch (e) {
+      setErro(
+        e instanceof Error
+          ? `Não foi possível salvar: ${e.message}`
+          : "Não foi possível salvar a edição.",
+      );
+    } finally {
+      setSalvandoInd(false);
+    }
   }
 
   function abrirVersaoSalva(idHistoria: number, versao: VersaoBanco) {
@@ -291,6 +388,7 @@ export default function App() {
     }
     setModo("individual");
     setHistoriasDaily([]);
+    setEditandoInd(false);
     setResultado({
       storyId: idHistoria,
       story: { who: versao.who, what: versao.what, why: versao.why },
@@ -320,7 +418,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* Painel de sessão do experimento */}
         <section className="sessao">
           <div className="sessao-linha">
             <input
@@ -363,7 +460,6 @@ export default function App() {
           )}
         </section>
 
-        {/* Seletor de modo (só faz sentido com assistente) */}
         {comAssistente && (
           <div className="modo-tabs">
             <button
@@ -446,7 +542,6 @@ export default function App() {
           {erro && <p className="erro">{erro}</p>}
         </section>
 
-        {/* Resultado do MODO DAILY: lista de cards extraídos */}
         {modo === "daily" && historiasDaily.length > 0 && (
           <section className="resultado">
             <div className="painel">
@@ -455,43 +550,95 @@ export default function App() {
                 <span className="contagem">{historiasDaily.length}</span>
               </h2>
               <p className="dica" style={{ marginTop: 0 }}>
-                Todos os cards abaixo já foram adicionados ao backlog.
+                Os cards abaixo já estão no backlog. Use "editar" para corrigir.
               </p>
               <div className="lista-daily">
                 {historiasDaily.map((h) => (
-                  <CardDaily key={h.storyId} h={h} />
+                  <CardDaily
+                    key={h.storyId}
+                    h={h}
+                    onSalvarEdicao={salvarEdicao}
+                  />
                 ))}
               </div>
             </div>
           </section>
         )}
 
-        {/* Resultado do MODO INDIVIDUAL: uma história detalhada */}
         {modo === "individual" && resultado && (
           <section className="resultado">
             <div className="story-card">
               <div className="bloco-topo">
                 <span className="bloco-titulo">História</span>
-                {comAssistente && (
-                  <BotaoAudio
-                    id="historia"
-                    texto={falaDaHistoria(resultado)}
-                    fala={fala}
+                <div className="bloco-acoes">
+                  {resultado.storyId && !editandoInd && (
+                    <button
+                      className="audio-btn"
+                      onClick={abrirEdicaoIndividual}
+                    >
+                      ✎ Editar história
+                    </button>
+                  )}
+                  {comAssistente && !editandoInd && (
+                    <BotaoAudio
+                      id="historia"
+                      texto={falaDaHistoria(resultado)}
+                      fala={fala}
+                    />
+                  )}
+                </div>
+              </div>
+
+              {editandoInd ? (
+                <div className="card-edicao" style={{ padding: "8px 0 16px" }}>
+                  <label>Como (quem)</label>
+                  <input
+                    value={edWho}
+                    onChange={(e) => setEdWho(e.target.value)}
                   />
-                )}
-              </div>
-              <div className="story-part">
-                <span className="rotulo">Como</span>
-                <span className="valor">{resultado.story.who || "—"}</span>
-              </div>
-              <div className="story-part">
-                <span className="rotulo">eu quero</span>
-                <span className="valor">{resultado.story.what || "—"}</span>
-              </div>
-              <div className="story-part">
-                <span className="rotulo">para</span>
-                <span className="valor">{resultado.story.why || "—"}</span>
-              </div>
+                  <label>eu quero (o quê)</label>
+                  <input
+                    value={edWhat}
+                    onChange={(e) => setEdWhat(e.target.value)}
+                  />
+                  <label>para (benefício)</label>
+                  <input
+                    value={edWhy}
+                    onChange={(e) => setEdWhy(e.target.value)}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <button
+                      className="salvar-edicao"
+                      onClick={salvarEdicaoIndividual}
+                      disabled={salvandoInd}
+                    >
+                      {salvandoInd ? "Salvando…" : "Salvar correção"}
+                    </button>
+                    <button
+                      className="mic"
+                      style={{ marginTop: 0 }}
+                      onClick={() => setEditandoInd(false)}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="story-part">
+                    <span className="rotulo">Como</span>
+                    <span className="valor">{resultado.story.who || "—"}</span>
+                  </div>
+                  <div className="story-part">
+                    <span className="rotulo">eu quero</span>
+                    <span className="valor">{resultado.story.what || "—"}</span>
+                  </div>
+                  <div className="story-part">
+                    <span className="rotulo">para</span>
+                    <span className="valor">{resultado.story.why || "—"}</span>
+                  </div>
+                </>
+              )}
             </div>
 
             {comAssistente && (

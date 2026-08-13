@@ -10,7 +10,6 @@ export function iniciarSessao(participante: string, condicao: string): number {
     .run(participante, condicao, new Date().toISOString());
   const sessionId = Number(info.lastInsertRowid);
 
-  // Grava/atualiza a sessão ativa (linha única id = 1).
   db.prepare(
     `INSERT INTO estado_atual (id, session_id) VALUES (1, ?)
      ON CONFLICT(id) DO UPDATE SET session_id = excluded.session_id`,
@@ -95,7 +94,7 @@ export function listarVersoes(storyId: number) {
     .all(storyId);
 }
 
-// Lista as histórias da sessão ATIVA (a mais recente primeiro).
+// Lista as histórias da sessão (a mais recente primeiro).
 export function listarHistorias(sessionId: number) {
   return db
     .prepare(
@@ -103,6 +102,58 @@ export function listarHistorias(sessionId: number) {
        FROM stories WHERE session_id = ? ORDER BY id DESC`,
     )
     .all(sessionId);
+}
+
+// Lista os cards existentes de uma sessão em formato resumido (para o LLM
+// decidir mesclagem). Ordem crescente para o contexto ficar estável.
+export function listarCardsResumidos(
+  sessionId: number,
+): { id: number; who: string; what: string; why: string }[] {
+  return db
+    .prepare(
+      `SELECT id, who, what, why FROM stories WHERE session_id = ? ORDER BY id ASC`,
+    )
+    .all(sessionId) as { id: number; who: string; what: string; why: string }[];
+}
+
+// Edição manual de um card: atualiza a linha atual E grava uma versão nova
+// marcando que foi uma edição manual (entrada_original explica a origem).
+export function editarHistoria(
+  storyId: number,
+  story: UserStory,
+): { ok: boolean } {
+  const existe = db.prepare("SELECT id FROM stories WHERE id = ?").get(storyId);
+  if (!existe) return { ok: false };
+
+  // Reaproveita a última versão (violações/critérios) apenas para manter o
+  // histórico coerente; aqui a edição é do texto da story em si.
+  db.prepare(
+    `INSERT INTO story_versions
+       (story_id, entrada_original, who, what, why, violacoes_json, criterios_json,
+        total_violacoes, violacoes_regra, violacoes_llm, criada_em)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    storyId,
+    "[edição manual]",
+    story.who,
+    story.what,
+    story.why,
+    "[]",
+    "[]",
+    0,
+    0,
+    0,
+    new Date().toISOString(),
+  );
+
+  db.prepare(`UPDATE stories SET who = ?, what = ?, why = ? WHERE id = ?`).run(
+    story.who,
+    story.what,
+    story.why,
+    storyId,
+  );
+
+  return { ok: true };
 }
 
 export function buscarHistoriaComVersoes(storyId: number) {
