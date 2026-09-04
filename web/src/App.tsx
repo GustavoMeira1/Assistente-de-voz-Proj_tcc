@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { useGravador } from "./useGravador";
 import { useGravadorContinuo } from "./useGravadorContinuo";
 import { useFala } from "./useFala";
-import { Backlog } from "./Backlog";
-import { ExportBar } from "./ExportBar";
+import { Backlog, type Versao } from "./Backlog";
+import { JiraConfig } from "./JiraConfig";
 
 interface UserStory {
   who: string;
@@ -33,44 +33,44 @@ interface HistoriaDaily {
   acao: "nova" | "atualizada";
 }
 
-interface VersaoBanco {
-  id: number;
-  entrada_original: string;
-  who: string;
-  what: string;
-  why: string;
-  violacoes_json: string;
-  criterios_json: string;
-}
+type Vista = "daily" | "historia" | "sessao" | "config";
 
-function falaDaHistoria(r: RefineResult): string {
-  const partes: string[] = [];
-  if (r.story.who) partes.push(`Como ${r.story.who}`);
-  if (r.story.what) partes.push(`eu quero ${r.story.what}`);
-  if (r.story.why) partes.push(`para ${r.story.why}`);
+const API = "http://localhost:3333";
+
+/* ---------- Helpers de fala ---------- */
+
+function frase(story: UserStory): string {
+  const partes = [
+    story.who ? `Como ${story.who}` : null,
+    story.what ? `eu quero ${story.what}` : null,
+    story.why ? `para ${story.why}` : null,
+  ].filter(Boolean);
   return partes.length ? partes.join(", ") + "." : "A história está vazia.";
 }
 
-function falaDasViolacoes(r: RefineResult): string {
-  const n = r.violations.length;
-  if (n === 0) return "Nenhum ponto de atenção encontrado.";
-  const intro = n === 1 ? "Um ponto de atenção." : `${n} pontos de atenção.`;
-  const itens = r.violations
-    .map((v, i) => `${i + 1}. ${v.criterio}. ${v.mensagem}`)
-    .join(" ");
-  return `${intro} ${itens}`;
-}
-
-function falaDosCriterios(r: RefineResult): string {
-  const n = r.acceptanceCriteria.length;
-  if (n === 0) return "Nenhum critério de aceite sugerido.";
+function falaViolacoes(v: Violation[]): string {
+  if (v.length === 0) return "Nenhum ponto de atenção.";
   const intro =
-    n === 1 ? "Um critério de aceite." : `${n} critérios de aceite.`;
-  const itens = r.acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join(" ");
-  return `${intro} ${itens}`;
+    v.length === 1 ? "Um ponto de atenção." : `${v.length} pontos de atenção.`;
+  return (
+    intro +
+    " " +
+    v.map((x, i) => `${i + 1}. ${x.criterio}. ${x.mensagem}`).join(" ")
+  );
 }
 
-function BotaoAudio({
+function falaCriterios(c: string[]): string {
+  if (c.length === 0) return "Nenhum critério de aceite sugerido.";
+  const intro =
+    c.length === 1
+      ? "Um critério de aceite."
+      : `${c.length} critérios de aceite.`;
+  return intro + " " + c.map((x, i) => `${i + 1}. ${x}`).join(" ");
+}
+
+/* ---------- Botão de áudio ---------- */
+
+function BotaoOuvir({
   id,
   texto,
   fala,
@@ -80,27 +80,29 @@ function BotaoAudio({
   fala: ReturnType<typeof useFala>;
 }) {
   const ativo = fala.blocoAtivo === id;
-  function aoClicar() {
-    if (ativo && !fala.pausado) fala.pausar();
-    else if (ativo && fala.pausado) fala.retomar();
-    else fala.falar(texto, id);
-  }
-  let rotulo = "▶ Ouvir";
-  if (ativo && !fala.pausado) rotulo = "⏸ Pausar";
-  else if (ativo && fala.pausado) rotulo = "▶ Retomar";
+  const rotulo = ativo ? (fala.pausado ? "Retomar" : "Pausar") : "Ouvir";
   return (
-    <button className="audio-btn" onClick={aoClicar}>
+    <button
+      className="btn-min"
+      onClick={() => {
+        if (ativo && !fala.pausado) fala.pausar();
+        else if (ativo && fala.pausado) fala.retomar();
+        else fala.falar(texto, id);
+      }}
+    >
       {rotulo}
     </button>
   );
 }
 
-function CardDaily({
+/* ---------- Cartão de demanda extraída ---------- */
+
+function CartaoDemanda({
   h,
-  onSalvarEdicao,
+  onSalvar,
 }: {
   h: HistoriaDaily;
-  onSalvarEdicao: (storyId: number, story: UserStory) => Promise<void>;
+  onSalvar: (id: number, s: UserStory) => Promise<void>;
 }) {
   const [editando, setEditando] = useState(false);
   const [who, setWho] = useState(h.story.who);
@@ -110,723 +112,921 @@ function CardDaily({
 
   async function salvar() {
     setSalvando(true);
-    await onSalvarEdicao(h.storyId, { who, what, why });
+    await onSalvar(h.storyId, { who, what, why });
     setSalvando(false);
     setEditando(false);
   }
 
   return (
-    <div className="card-daily">
-      <div className="card-daily-meta">
-        <span className="card-daily-id">#{h.storyId}</span>
-        <span className={h.acao === "nova" ? "badge-nova" : "badge-atualizada"}>
-          {h.acao === "nova" ? "novo card" : "card atualizado"}
+    <div className="demanda">
+      <div className="demanda-meta">
+        <span className="demanda-id">#{h.storyId}</span>
+        <span className={h.acao === "nova" ? "selo novo" : "selo atualizado"}>
+          {h.acao === "nova" ? "novo" : "atualizado"}
         </span>
         {h.violations.length > 0 && (
-          <span className="card-daily-viol">
-            {h.violations.length} ponto(s) de atenção
+          <span className="selo alerta">
+            {h.violations.length}{" "}
+            {h.violations.length === 1 ? "alerta" : "alertas"}
           </span>
         )}
-        <button className="editar-link" onClick={() => setEditando((e) => !e)}>
-          {editando ? "cancelar" : "editar"}
-        </button>
+        <span className="demanda-editar">
+          <button className="btn-min" onClick={() => setEditando((e) => !e)}>
+            {editando ? "Cancelar" : "Editar"}
+          </button>
+        </span>
       </div>
 
       {editando ? (
-        <div className="card-edicao">
-          <label>Como (quem)</label>
-          <input value={who} onChange={(e) => setWho(e.target.value)} />
-          <label>eu quero (o quê)</label>
-          <input value={what} onChange={(e) => setWhat(e.target.value)} />
-          <label>para (benefício)</label>
-          <input value={why} onChange={(e) => setWhy(e.target.value)} />
-          <button
-            className="salvar-edicao"
-            onClick={salvar}
-            disabled={salvando}
-          >
-            {salvando ? "Salvando…" : "Salvar correção"}
-          </button>
+        <div className="form-edicao">
+          <div className="form-campo">
+            <label>Quem faz</label>
+            <input value={who} onChange={(e) => setWho(e.target.value)} />
+          </div>
+          <div className="form-campo">
+            <label>O que precisa ser feito</label>
+            <input value={what} onChange={(e) => setWhat(e.target.value)} />
+          </div>
+          <div className="form-campo">
+            <label>Para quê ou para quem</label>
+            <input value={why} onChange={(e) => setWhy(e.target.value)} />
+          </div>
+          <div className="linha-botoes">
+            <button className="btn" onClick={salvar} disabled={salvando}>
+              {salvando ? "Salvando…" : "Salvar correção"}
+            </button>
+          </div>
         </div>
       ) : (
-        <div className="card-daily-story">
-          <span className="mini-rotulo">Como</span> {h.story.who || "—"}{" "}
-          <span className="mini-rotulo">quero</span> {h.story.what || "—"}{" "}
+        <p className="historia-linha" style={{ margin: 0 }}>
+          <span className="marca">Como</span> {h.story.who || "—"}{" "}
+          <span className="marca">eu quero</span> {h.story.what || "—"}
           {h.story.why && (
             <>
-              <span className="mini-rotulo">para</span> {h.story.why}
+              {" "}
+              <span className="marca">para</span> {h.story.why}
             </>
           )}
-        </div>
+        </p>
       )}
     </div>
   );
 }
 
+/* ========================= APP ========================= */
+
 export default function App() {
-  const [modo, setModo] = useState<"daily" | "individual">("daily");
+  const [vista, setVista] = useState<Vista>("daily");
 
   const [texto, setTexto] = useState("");
   const [resultado, setResultado] = useState<RefineResult | null>(null);
-  const [historiasDaily, setHistoriasDaily] = useState<HistoriaDaily[]>([]);
+  const [demandas, setDemandas] = useState<HistoriaDaily[]>([]);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [storyId, setStoryId] = useState<number | null>(null);
-  const [recarregarBacklog, setRecarregarBacklog] = useState(0);
-  const [vendoSalva, setVendoSalva] = useState(false);
+  const [recarregar, setRecarregar] = useState(0);
 
-  const [statusAoVivo, setStatusAoVivo] = useState("");
-  const [transcricaoAoVivo, setTranscricaoAoVivo] = useState("");
+  const [statusVivo, setStatusVivo] = useState("");
+  const [transcricao, setTranscricao] = useState("");
   const transcricaoRef = useRef("");
   const processandoRef = useRef(false);
 
-  const [editandoInd, setEditandoInd] = useState(false);
+  const [editandoStory, setEditandoStory] = useState(false);
   const [edWho, setEdWho] = useState("");
   const [edWhat, setEdWhat] = useState("");
   const [edWhy, setEdWhy] = useState("");
-  const [salvandoInd, setSalvandoInd] = useState(false);
+  const [salvandoStory, setSalvandoStory] = useState(false);
 
   const [participante, setParticipante] = useState("");
   const [condicao, setCondicao] = useState<"com_assistente" | "sem_assistente">(
     "com_assistente",
   );
-  const [sessaoAtiva, setSessaoAtiva] = useState<{
+  const [sessao, setSessao] = useState<{
     participante: string;
     condicao: string;
   } | null>(null);
+  const [jiraAtivo, setJiraAtivo] = useState(false);
 
   const { gravando, transcrevendo, iniciar, pararEEnviar } = useGravador();
   const fala = useFala();
 
-  const comAssistente = sessaoAtiva?.condicao !== "sem_assistente";
+  const comAssistente = sessao?.condicao !== "sem_assistente";
 
-  // Reprocessa o texto acumulado inteiro e atualiza os cards da daily.
-  async function reprocessarAcumulado() {
+  /* ----- carga inicial ----- */
+  useEffect(() => {
+    fetch(`${API}/session/current`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.sessao) {
+          setSessao({
+            participante: d.sessao.participante ?? "sessão avulsa",
+            condicao: d.sessao.condicao,
+          });
+        }
+      })
+      .catch(() => {});
+
+    fetch(`${API}/config/jira`)
+      .then((r) => r.json())
+      .then((d) => setJiraAtivo(Boolean(d?.ativo)))
+      .catch(() => {});
+  }, []);
+
+  function recarregarJira() {
+    fetch(`${API}/config/jira`)
+      .then((r) => r.json())
+      .then((d) => setJiraAtivo(Boolean(d?.ativo)))
+      .catch(() => {});
+  }
+
+  /* ----- sessão ----- */
+  async function iniciarSessao() {
+    if (!participante.trim()) {
+      setErro("Informe quem vai participar desta sessão.");
+      return;
+    }
+    try {
+      const r = await fetch(`${API}/session/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ participante, condicao }),
+      });
+      const d = await r.json();
+      setSessao({ participante: d.participante, condicao: d.condicao });
+      limpar();
+      setRecarregar((n) => n + 1);
+      setVista("daily");
+    } catch {
+      setErro("Não foi possível iniciar a sessão.");
+    }
+  }
+
+  /* ----- daily ----- */
+  async function reprocessar() {
     if (!transcricaoRef.current.trim()) return;
     try {
-      const respD = await fetch("http://localhost:3333/refine-daily", {
+      const r = await fetch(`${API}/refine-daily`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ texto: transcricaoRef.current }),
       });
-      if (respD.ok) {
-        const dadosD = await respD.json();
-        const novas: HistoriaDaily[] = dadosD.historias ?? [];
-        if (novas.length > 0) setHistoriasDaily(novas);
-        setRecarregarBacklog((n) => n + 1);
+      if (r.ok) {
+        const d = await r.json();
+        const novas: HistoriaDaily[] = d.historias ?? [];
+        if (novas.length > 0) setDemandas(novas);
+        setRecarregar((n) => n + 1);
       }
     } catch {
-      /* silencioso */
+      /* silencioso: o usuário vê o status */
     }
   }
 
-  // Durante a daily ao vivo: apenas transcreve e ACUMULA o texto.
-  // Os cards NÃO são gerados durante a fala — só ao encerrar (processamento
-  // único do texto completo), o que elimina duplicações por corrida.
-  async function processarBlocoAoVivo(audio: Blob) {
+  async function aoFecharBloco(audio: Blob) {
     try {
-      setStatusAoVivo("Transcrevendo…");
+      setStatusVivo("Transcrevendo o que foi dito…");
       const form = new FormData();
       form.append("audio", audio, "bloco.webm");
-      const respT = await fetch("http://localhost:3333/transcribe", {
+      const r = await fetch(`${API}/transcribe`, {
         method: "POST",
         body: form,
       });
-      if (respT.ok) {
-        const dadosT = (await respT.json()) as { texto: string };
-        const trecho = (dadosT.texto ?? "").trim();
+      if (r.ok) {
+        const d = (await r.json()) as { texto: string };
+        const trecho = (d.texto ?? "").trim();
         if (trecho) {
           transcricaoRef.current = (
             transcricaoRef.current +
             " " +
             trecho
           ).trim();
-          setTranscricaoAoVivo(transcricaoRef.current);
+          setTranscricao(transcricaoRef.current);
         }
       }
-      setStatusAoVivo("Ouvindo…");
+      setStatusVivo("Ouvindo a reunião");
     } catch {
-      setStatusAoVivo("Ouvindo…");
+      setStatusVivo("Ouvindo a reunião");
     }
   }
 
-  const gravadorAoVivo = useGravadorContinuo(processarBlocoAoVivo);
+  const gravadorVivo = useGravadorContinuo(aoFecharBloco);
 
-  useEffect(() => {
-    fetch("http://localhost:3333/session/current")
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.sessao) {
-          setSessaoAtiva({
-            participante: d.sessao.participante ?? "?",
-            condicao: d.sessao.condicao,
-          });
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  async function iniciarSessao() {
-    if (!participante.trim()) {
-      setErro("Informe o identificador do participante.");
-      return;
-    }
-    try {
-      const resp = await fetch("http://localhost:3333/session/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ participante, condicao }),
-      });
-      const d = await resp.json();
-      setSessaoAtiva({ participante: d.participante, condicao: d.condicao });
-      setTexto("");
-      setResultado(null);
-      setHistoriasDaily([]);
-      transcricaoRef.current = "";
-      setTranscricaoAoVivo("");
-      setStoryId(null);
-      setVendoSalva(false);
-      setEditandoInd(false);
-      setErro(null);
-      setRecarregarBacklog((n) => n + 1);
-    } catch {
-      setErro("Não foi possível iniciar a sessão.");
-    }
-  }
-
-  async function processarDaily(textoParaProcessar?: string) {
-    const alvo = textoParaProcessar ?? texto;
-    if (!alvo.trim()) return;
-    setCarregando(true);
+  async function alternarDaily() {
     setErro(null);
-    setResultado(null);
-    setVendoSalva(false);
-    try {
-      const resp = await fetch("http://localhost:3333/refine-daily", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texto: alvo }),
-      });
-      if (!resp.ok) throw new Error(`servidor respondeu ${resp.status}`);
-      const dados = await resp.json();
-      const novas: HistoriaDaily[] = dados.historias ?? [];
-      setHistoriasDaily((atuais) => {
-        const mapa = new Map(atuais.map((h) => [h.storyId, h]));
-        for (const nh of novas) mapa.set(nh.storyId, nh);
-        return Array.from(mapa.values());
-      });
-      setRecarregarBacklog((n) => n + 1);
-      if (novas.length === 0) {
-        setErro("Nenhuma demanda foi identificada neste trecho.");
-      }
-    } catch (e) {
-      setErro(e instanceof Error ? e.message : "erro ao processar a daily");
-    } finally {
-      setCarregando(false);
-    }
-  }
-
-  async function analisar(textoParaAnalisar?: string) {
-    const alvo = textoParaAnalisar ?? texto;
-    if (!alvo.trim()) return;
-    setCarregando(true);
-    setErro(null);
-    setVendoSalva(false);
-    setHistoriasDaily([]);
-    setEditandoInd(false);
-    try {
-      const resp = await fetch("http://localhost:3333/refine", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ texto: alvo, storyId }),
-      });
-      if (!resp.ok) throw new Error(`servidor respondeu ${resp.status}`);
-      const dados: RefineResult = await resp.json();
-      setResultado(dados);
-      if (typeof dados.storyId === "number") setStoryId(dados.storyId);
-      setRecarregarBacklog((n) => n + 1);
-    } catch (e) {
-      setErro(e instanceof Error ? e.message : "erro desconhecido");
-    } finally {
-      setCarregando(false);
-    }
-  }
-
-  async function acaoPrincipal(textoAlvo?: string) {
-    if (modo === "daily") await processarDaily(textoAlvo);
-    else await analisar(textoAlvo);
-  }
-
-  async function alternarGravacao() {
-    setErro(null);
-    try {
-      if (gravando) {
-        const textoTranscrito = await pararEEnviar();
-        setTexto(textoTranscrito);
-        if (textoTranscrito.trim()) await acaoPrincipal(textoTranscrito);
-      } else {
-        await iniciar();
-      }
-    } catch (e) {
-      setErro(e instanceof Error ? e.message : "erro no microfone");
-    }
-  }
-
-  async function alternarAoVivo() {
-    setErro(null);
-    if (gravadorAoVivo.gravandoAoVivo) {
-      // Encerra a captura. Aguarda o último bloco ser transcrito e então
-      // processa o texto COMPLETO uma única vez (gera todos os cards de vez).
-      gravadorAoVivo.parar();
+    if (gravadorVivo.gravandoAoVivo) {
+      gravadorVivo.parar();
       setCarregando(true);
-      setStatusAoVivo("Transcrevendo o trecho final…");
-      // Espera para o último bloco de áudio terminar de transcrever.
+      setStatusVivo("Fechando a transcrição…");
       setTimeout(async () => {
-        setStatusAoVivo("Gerando o backlog a partir da conversa…");
-        await reprocessarAcumulado();
-        setStatusAoVivo("Concluído. Backlog gerado.");
+        setStatusVivo("Montando o backlog a partir da conversa…");
+        await reprocessar();
+        setStatusVivo("Backlog atualizado.");
         setCarregando(false);
       }, 3000);
     } else {
       try {
         transcricaoRef.current = "";
-        setTranscricaoAoVivo("");
-        setHistoriasDaily([]);
-        setStatusAoVivo("Ouvindo… (os cards aparecem ao encerrar)");
-        await gravadorAoVivo.iniciar();
+        setTranscricao("");
+        setDemandas([]);
+        setStatusVivo("Ouvindo a reunião");
+        await gravadorVivo.iniciar();
       } catch {
-        setErro("Não foi possível acessar o microfone.");
-        setStatusAoVivo("");
+        setErro(
+          "Não foi possível acessar o microfone. Verifique a permissão no navegador.",
+        );
+        setStatusVivo("");
       }
     }
   }
 
-  function novaHistoria() {
+  async function processarTexto(alvo?: string) {
+    const conteudo = alvo ?? texto;
+    if (!conteudo.trim()) return;
+    setCarregando(true);
+    setErro(null);
+    try {
+      const r = await fetch(`${API}/refine-daily`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texto: conteudo }),
+      });
+      if (!r.ok) throw new Error(`o servidor respondeu ${r.status}`);
+      const d = await r.json();
+      const novas: HistoriaDaily[] = d.historias ?? [];
+      setDemandas((atuais) => {
+        const mapa = new Map(atuais.map((h) => [h.storyId, h]));
+        novas.forEach((n) => mapa.set(n.storyId, n));
+        return Array.from(mapa.values());
+      });
+      setRecarregar((n) => n + 1);
+      if (novas.length === 0)
+        setErro("Nenhuma demanda foi identificada neste trecho.");
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Falha ao processar o trecho.");
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  /* ----- história individual ----- */
+  async function analisarHistoria(alvo?: string) {
+    const conteudo = alvo ?? texto;
+    if (!conteudo.trim()) return;
+    setCarregando(true);
+    setErro(null);
+    setEditandoStory(false);
+    try {
+      const r = await fetch(`${API}/refine`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texto: conteudo, storyId }),
+      });
+      if (!r.ok) throw new Error(`o servidor respondeu ${r.status}`);
+      const d: RefineResult = await r.json();
+      setResultado(d);
+      if (typeof d.storyId === "number") setStoryId(d.storyId);
+      setRecarregar((n) => n + 1);
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : "Falha ao analisar a história.");
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function gravarTrecho() {
+    setErro(null);
+    try {
+      if (gravando) {
+        const t = await pararEEnviar();
+        setTexto(t);
+        if (t.trim()) {
+          if (vista === "daily") await processarTexto(t);
+          else await analisarHistoria(t);
+        }
+      } else {
+        await iniciar();
+      }
+    } catch {
+      setErro("Não foi possível usar o microfone.");
+    }
+  }
+
+  function limpar() {
     fala.parar();
     setTexto("");
     setResultado(null);
-    setHistoriasDaily([]);
+    setDemandas([]);
     setStoryId(null);
     setErro(null);
-    setVendoSalva(false);
-    setEditandoInd(false);
+    setEditandoStory(false);
+    transcricaoRef.current = "";
+    setTranscricao("");
+    setStatusVivo("");
   }
 
-  async function salvarEdicao(idHistoria: number, story: UserStory) {
-    const resp = await fetch(`http://localhost:3333/stories/${idHistoria}`, {
+  async function salvarEdicao(id: number, story: UserStory) {
+    const r = await fetch(`${API}/stories/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(story),
     });
-    if (!resp.ok) throw new Error("falha ao salvar");
-    setHistoriasDaily((lista) =>
-      lista.map((h) => (h.storyId === idHistoria ? { ...h, story } : h)),
+    if (!r.ok) throw new Error("falha ao salvar");
+    setDemandas((lista) =>
+      lista.map((h) => (h.storyId === id ? { ...h, story } : h)),
     );
-    setRecarregarBacklog((n) => n + 1);
+    setRecarregar((n) => n + 1);
   }
 
-  function abrirEdicaoIndividual() {
-    if (!resultado) return;
-    setEdWho(resultado.story.who);
-    setEdWhat(resultado.story.what);
-    setEdWhy(resultado.story.why);
-    setEditandoInd(true);
-  }
-
-  async function salvarEdicaoIndividual() {
+  async function salvarStory() {
     if (!resultado?.storyId) return;
-    setSalvandoInd(true);
+    setSalvandoStory(true);
     setErro(null);
     try {
-      const novaStory: UserStory = { who: edWho, what: edWhat, why: edWhy };
-      const resp = await fetch(
-        `http://localhost:3333/stories/${resultado.storyId}`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(novaStory),
-        },
-      );
-      if (!resp.ok) throw new Error(`servidor respondeu ${resp.status}`);
-      setResultado({ ...resultado, story: novaStory });
-      setEditandoInd(false);
-      setRecarregarBacklog((n) => n + 1);
+      const nova: UserStory = { who: edWho, what: edWhat, why: edWhy };
+      const r = await fetch(`${API}/stories/${resultado.storyId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nova),
+      });
+      if (!r.ok) throw new Error(`o servidor respondeu ${r.status}`);
+      setResultado({ ...resultado, story: nova });
+      setEditandoStory(false);
+      setRecarregar((n) => n + 1);
     } catch (e) {
       setErro(
         e instanceof Error
           ? `Não foi possível salvar: ${e.message}`
-          : "Não foi possível salvar a edição.",
+          : "Não foi possível salvar.",
       );
     } finally {
-      setSalvandoInd(false);
+      setSalvandoStory(false);
     }
   }
 
-  function abrirVersaoSalva(idHistoria: number, versao: VersaoBanco) {
+  function abrirDoBacklog(id: number, v: Versao) {
     fala.parar();
     let violations: Violation[] = [];
-    let acceptanceCriteria: string[] = [];
+    let criterios: string[] = [];
     try {
-      violations = JSON.parse(versao.violacoes_json ?? "[]");
+      violations = JSON.parse(v.violacoes_json ?? "[]");
     } catch {
       violations = [];
     }
     try {
-      acceptanceCriteria = JSON.parse(versao.criterios_json ?? "[]");
+      criterios = JSON.parse(v.criterios_json ?? "[]");
     } catch {
-      acceptanceCriteria = [];
+      criterios = [];
     }
-    setModo("individual");
-    setHistoriasDaily([]);
-    setEditandoInd(false);
+    setVista("historia");
+    setDemandas([]);
+    setEditandoStory(false);
     setResultado({
-      storyId: idHistoria,
-      story: { who: versao.who, what: versao.what, why: versao.why },
+      storyId: id,
+      story: { who: v.who, what: v.what, why: v.why },
       violations,
-      acceptanceCriteria,
+      acceptanceCriteria: criterios,
     });
-    setStoryId(idHistoria);
-    setTexto(versao.entrada_original ?? "");
-    setVendoSalva(true);
+    setStoryId(id);
+    setTexto(v.entrada_original ?? "");
     setErro(null);
   }
 
+  /* ========================= RENDER ========================= */
+
   return (
-    <div className="layout">
-      <Backlog
-        recarregar={recarregarBacklog}
-        storyIdAtual={storyId}
-        onAbrir={abrirVersaoSalva}
-      />
+    <div className="app">
+      <header className="topbar">
+        <span className="brand">
+          <span className="brand-dot" />
+          Assistente de daily
+          <span className="brand-sub">user stories com INVEST e QUS</span>
+        </span>
 
-      <div className="app">
-        <header className="topbar">
-          <span className="mark">US</span>
-          <div>
-            <h1>Assistente de Refinement</h1>
-            <p className="sub">Facilitação de user stories com INVEST + QUS</p>
-          </div>
-        </header>
+        <span className="topbar-espaco" />
 
-        <section className="sessao">
-          <div className="sessao-linha">
-            <input
-              className="sessao-input"
-              placeholder="Identificador do participante (ex.: P01)"
-              value={participante}
-              onChange={(e) => setParticipante(e.target.value)}
-            />
-            <select
-              className="sessao-select"
-              value={condicao}
-              onChange={(e) =>
-                setCondicao(
-                  e.target.value as "com_assistente" | "sem_assistente",
-                )
-              }
-            >
-              <option value="com_assistente">Com assistente</option>
-              <option value="sem_assistente">Sem assistente (controle)</option>
-            </select>
-            <button className="sessao-btn" onClick={iniciarSessao}>
-              Iniciar sessão
-            </button>
-          </div>
-          {sessaoAtiva && (
-            <p className="sessao-ativa">
-              Sessão ativa: <strong>{sessaoAtiva.participante}</strong> —{" "}
-              <span
-                className={
-                  sessaoAtiva.condicao === "sem_assistente"
-                    ? "cond-controle"
-                    : "cond-assistente"
-                }
-              >
-                {sessaoAtiva.condicao === "sem_assistente"
-                  ? "sem assistente (controle)"
-                  : "com assistente"}
-              </span>
-            </p>
-          )}
-        </section>
+        <button className="chip-sessao" onClick={() => setVista("sessao")}>
+          <span className="chip-nome">
+            {sessao?.participante ?? "sem sessão"}
+          </span>
+          <span
+            className={`chip-cond ${sessao?.condicao === "sem_assistente" ? "sem" : "com"}`}
+          >
+            {sessao?.condicao === "sem_assistente"
+              ? "controle"
+              : "com assistente"}
+          </span>
+        </button>
 
-        <ExportBar />
+        <button
+          className={vista === "config" ? "btn-icone ativo" : "btn-icone"}
+          onClick={() => setVista("config")}
+        >
+          Configurações
+        </button>
+      </header>
 
-        {comAssistente && (
-          <div className="modo-tabs">
-            <button
-              className={modo === "daily" ? "modo-tab ativa" : "modo-tab"}
-              onClick={() => {
-                setModo("daily");
-                novaHistoria();
-              }}
-            >
-              Modo Daily (várias demandas)
-            </button>
-            <button
-              className={modo === "individual" ? "modo-tab ativa" : "modo-tab"}
-              onClick={() => {
-                setModo("individual");
-                novaHistoria();
-              }}
-            >
-              História individual
-            </button>
-          </div>
-        )}
+      <div className="corpo">
+        <Backlog
+          recarregar={recarregar}
+          storyIdAtual={storyId}
+          onAbrir={abrirDoBacklog}
+          jiraAtivo={jiraAtivo}
+        />
 
-        {modo === "daily" && comAssistente && (
-          <section className="ao-vivo">
-            <div className="ao-vivo-topo">
-              <button
-                className={
-                  gravadorAoVivo.gravandoAoVivo
-                    ? "aovivo-btn gravando"
-                    : "aovivo-btn"
-                }
-                onClick={alternarAoVivo}
-                disabled={carregando}
-              >
-                {gravadorAoVivo.gravandoAoVivo
-                  ? "⏹ Encerrar daily ao vivo"
-                  : "🔴 Iniciar daily ao vivo"}
-              </button>
-              {statusAoVivo && (
-                <span className="ao-vivo-status">{statusAoVivo}</span>
-              )}
-            </div>
-            {gravadorAoVivo.gravandoAoVivo && (
-              <p className="dica" style={{ marginTop: 8 }}>
-                Fale naturalmente. O assistente transcreve durante a fala e gera
-                todos os cards de uma vez quando você encerrar.
-              </p>
-            )}
-            {transcricaoAoVivo && (
-              <div className="ao-vivo-transcricoes">
-                <p className="versoes-titulo">Transcrição acumulada</p>
-                <p className="ao-vivo-trecho">"{transcricaoAoVivo}"</p>
+        <main className="area">
+          <div className="area-interna">
+            {(vista === "daily" || vista === "historia") && comAssistente && (
+              <div className="abas">
+                <button
+                  className={vista === "daily" ? "aba ativa" : "aba"}
+                  onClick={() => {
+                    setVista("daily");
+                    limpar();
+                  }}
+                >
+                  Daily
+                </button>
+                <button
+                  className={vista === "historia" ? "aba ativa" : "aba"}
+                  onClick={() => {
+                    setVista("historia");
+                    limpar();
+                  }}
+                >
+                  História avulsa
+                </button>
               </div>
             )}
-          </section>
-        )}
 
-        <section className="composer">
-          <label htmlFor="entrada">
-            {modo === "daily" && comAssistente
-              ? "Ou cole/fale um trecho da daily manualmente"
-              : comAssistente
-                ? "Descreva a história em uma frase"
-                : "Escreva a user story (formato: Como… eu quero… para…)"}
-          </label>
-          <textarea
-            id="entrada"
-            value={texto}
-            onChange={(e) => setTexto(e.target.value)}
-            placeholder={
-              modo === "daily"
-                ? "Ex.: Preciso que o Gustavo crie um relatório de vendas para o Eduardo, e o Guilherme precisa validar o filtro de dados"
-                : "Ex.: Como gerente eu quero exportar relatórios para acompanhar a equipe"
-            }
-            rows={modo === "daily" ? 4 : 3}
-          />
-          <div className="botoes">
-            {comAssistente && (
-              <button
-                className={gravando ? "mic gravando" : "mic"}
-                onClick={alternarGravacao}
-                disabled={
-                  transcrevendo || carregando || gravadorAoVivo.gravandoAoVivo
-                }
-              >
-                {gravando ? "● Parar e transcrever" : "🎤 Gravar trecho"}
-              </button>
-            )}
-            <button
-              onClick={() => acaoPrincipal()}
-              disabled={carregando || !texto.trim()}
-            >
-              {carregando
-                ? "Processando…"
-                : modo === "daily" && comAssistente
-                  ? "Processar trecho"
-                  : comAssistente
-                    ? "Analisar história"
-                    : "Salvar história"}
-            </button>
-            <button
-              className="mic"
-              onClick={novaHistoria}
-              disabled={carregando}
-            >
-              Limpar
-            </button>
-          </div>
-          {transcrevendo && <p className="dica">Transcrevendo o áudio…</p>}
-          {storyId && !vendoSalva && modo === "individual" && (
-            <p className="dica">Trabalhando na história #{storyId}</p>
-          )}
-          {vendoSalva && (
-            <p className="dica">Vendo versão salva da história #{storyId}.</p>
-          )}
-          {erro && <p className="erro">{erro}</p>}
-        </section>
-
-        {modo === "daily" && historiasDaily.length > 0 && (
-          <section className="resultado">
-            <div className="painel">
-              <h2>
-                Demandas no backlog
-                <span className="contagem">{historiasDaily.length}</span>
-              </h2>
-              <p className="dica" style={{ marginTop: 0 }}>
-                Os cards abaixo já estão no backlog. Use "editar" para corrigir,
-                ou o ✕ no backlog para excluir duplicatas.
-              </p>
-              <div className="lista-daily">
-                {historiasDaily.map((h) => (
-                  <CardDaily
-                    key={h.storyId}
-                    h={h}
-                    onSalvarEdicao={salvarEdicao}
-                  />
-                ))}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {modo === "individual" && resultado && (
-          <section className="resultado">
-            <div className="story-card">
-              <div className="bloco-topo">
-                <span className="bloco-titulo">História</span>
-                <div className="bloco-acoes">
-                  {resultado.storyId && !editandoInd && (
-                    <button
-                      className="audio-btn"
-                      onClick={abrirEdicaoIndividual}
-                    >
-                      ✎ Editar história
-                    </button>
-                  )}
-                  {comAssistente && !editandoInd && (
-                    <BotaoAudio
-                      id="historia"
-                      texto={falaDaHistoria(resultado)}
-                      fala={fala}
-                    />
-                  )}
-                </div>
-              </div>
-
-              {editandoInd ? (
-                <div className="card-edicao" style={{ padding: "8px 0 16px" }}>
-                  <label>Como (quem)</label>
-                  <input
-                    value={edWho}
-                    onChange={(e) => setEdWho(e.target.value)}
-                  />
-                  <label>eu quero (o quê)</label>
-                  <input
-                    value={edWhat}
-                    onChange={(e) => setEdWhat(e.target.value)}
-                  />
-                  <label>para (benefício)</label>
-                  <input
-                    value={edWhy}
-                    onChange={(e) => setEdWhy(e.target.value)}
-                  />
-                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                    <button
-                      className="salvar-edicao"
-                      onClick={salvarEdicaoIndividual}
-                      disabled={salvandoInd}
-                    >
-                      {salvandoInd ? "Salvando…" : "Salvar correção"}
-                    </button>
-                    <button
-                      className="mic"
-                      style={{ marginTop: 0 }}
-                      onClick={() => setEditandoInd(false)}
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="story-part">
-                    <span className="rotulo">Como</span>
-                    <span className="valor">{resultado.story.who || "—"}</span>
-                  </div>
-                  <div className="story-part">
-                    <span className="rotulo">eu quero</span>
-                    <span className="valor">{resultado.story.what || "—"}</span>
-                  </div>
-                  <div className="story-part">
-                    <span className="rotulo">para</span>
-                    <span className="valor">{resultado.story.why || "—"}</span>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {comAssistente && (
+            {/* ---------- DAILY ---------- */}
+            {vista === "daily" && (
               <>
-                <div className="painel">
-                  <h2>
-                    Pontos de atenção
-                    <span className="contagem">
-                      {resultado.violations.length}
-                    </span>
-                    <BotaoAudio
-                      id="violacoes"
-                      texto={falaDasViolacoes(resultado)}
-                      fala={fala}
-                    />
-                  </h2>
-                  {resultado.violations.length === 0 ? (
-                    <p className="vazio">Nenhuma violação detectada.</p>
-                  ) : (
-                    <ul className="lista-violacoes">
-                      {resultado.violations.map((v, i) => (
-                        <li key={i} className={`violacao origem-${v.origem}`}>
-                          <div className="violacao-topo">
-                            <span className="criterio">{v.criterio}</span>
-                            <span className={`tag tag-${v.origem}`}>
-                              {v.origem === "regra" ? "regra" : "IA"}
-                            </span>
-                          </div>
-                          <p className="mensagem">{v.mensagem}</p>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+                {comAssistente && (
+                  <section className="bloco">
+                    <div className="captura">
+                      <button
+                        className={
+                          gravadorVivo.gravandoAoVivo
+                            ? "btn-gravar gravando"
+                            : "btn-gravar"
+                        }
+                        onClick={alternarDaily}
+                        disabled={carregando && !gravadorVivo.gravandoAoVivo}
+                      >
+                        <span className="ponto" />
+                        {gravadorVivo.gravandoAoVivo
+                          ? "Encerrar e gerar backlog"
+                          : "Gravar daily"}
+                      </button>
+                      {statusVivo && (
+                        <span
+                          className={
+                            gravadorVivo.gravandoAoVivo
+                              ? "status-captura ativo"
+                              : "status-captura"
+                          }
+                        >
+                          {statusVivo}
+                        </span>
+                      )}
+                    </div>
 
-                <div className="painel">
-                  <h2>
-                    Critérios de aceite sugeridos
-                    <BotaoAudio
-                      id="criterios"
-                      texto={falaDosCriterios(resultado)}
-                      fala={fala}
-                    />
-                  </h2>
-                  {resultado.acceptanceCriteria.length === 0 ? (
-                    <p className="vazio">Nenhum critério sugerido.</p>
-                  ) : (
-                    <ul className="lista-criterios">
-                      {resultado.acceptanceCriteria.map((c, i) => (
-                        <li key={i}>{c}</li>
+                    {!gravadorVivo.gravandoAoVivo && !transcricao && (
+                      <p
+                        className="ajuda"
+                        style={{ marginTop: 12, marginBottom: 0 }}
+                      >
+                        Fale a reunião normalmente. A conversa é transcrita
+                        durante a fala e vira histórias quando você encerrar.
+                      </p>
+                    )}
+
+                    {transcricao && (
+                      <div className="transcricao">
+                        <p className="transcricao-rotulo">
+                          Transcrição da reunião
+                        </p>
+                        <p className="transcricao-texto">{transcricao}</p>
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                <section className="bloco">
+                  <div className="bloco-cabeca">
+                    <h2 className="bloco-titulo">
+                      {comAssistente ? "Trecho escrito" : "Escrever história"}
+                    </h2>
+                  </div>
+                  <textarea
+                    className="campo-texto"
+                    rows={4}
+                    value={texto}
+                    onChange={(e) => setTexto(e.target.value)}
+                    placeholder={
+                      comAssistente
+                        ? "Cole aqui um trecho da reunião, se preferir não usar o microfone."
+                        : "Como [quem], eu quero [o quê], para [benefício]."
+                    }
+                  />
+                  <div className="linha-botoes" style={{ marginTop: 10 }}>
+                    <button
+                      className="btn"
+                      onClick={() => processarTexto()}
+                      disabled={carregando || !texto.trim()}
+                    >
+                      {carregando
+                        ? "Processando…"
+                        : comAssistente
+                          ? "Extrair demandas"
+                          : "Salvar história"}
+                    </button>
+                    {comAssistente && (
+                      <button
+                        className="btn-sec"
+                        onClick={gravarTrecho}
+                        disabled={
+                          transcrevendo ||
+                          carregando ||
+                          gravadorVivo.gravandoAoVivo
+                        }
+                      >
+                        {gravando
+                          ? "Parar e transcrever"
+                          : transcrevendo
+                            ? "Transcrevendo…"
+                            : "Gravar trecho"}
+                      </button>
+                    )}
+                    <button
+                      className="btn-sec"
+                      onClick={limpar}
+                      disabled={carregando}
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                  {erro && <p className="erro">{erro}</p>}
+                </section>
+
+                {demandas.length > 0 && (
+                  <section className="bloco">
+                    <div className="bloco-cabeca">
+                      <h2 className="bloco-titulo">Demandas encontradas</h2>
+                      <span className="contador">{demandas.length}</span>
+                    </div>
+                    <p className="ajuda">
+                      Todas já estão no backlog. Corrija aqui o que o assistente
+                      entendeu errado.
+                    </p>
+                    <div className="lista-demandas">
+                      {demandas.map((h) => (
+                        <CartaoDemanda
+                          key={h.storyId}
+                          h={h}
+                          onSalvar={salvarEdicao}
+                        />
                       ))}
-                    </ul>
-                  )}
-                </div>
+                    </div>
+                  </section>
+                )}
               </>
             )}
-          </section>
-        )}
+
+            {/* ---------- HISTÓRIA AVULSA ---------- */}
+            {vista === "historia" && (
+              <>
+                <section className="bloco">
+                  <div className="bloco-cabeca">
+                    <h2 className="bloco-titulo">Descrever uma história</h2>
+                  </div>
+                  <textarea
+                    className="campo-texto"
+                    rows={3}
+                    value={texto}
+                    onChange={(e) => setTexto(e.target.value)}
+                    placeholder="Ex.: o gerente precisa exportar relatórios para acompanhar a equipe."
+                  />
+                  <div className="linha-botoes" style={{ marginTop: 10 }}>
+                    <button
+                      className="btn"
+                      onClick={() => analisarHistoria()}
+                      disabled={carregando || !texto.trim()}
+                    >
+                      {carregando ? "Analisando…" : "Analisar história"}
+                    </button>
+                    {comAssistente && (
+                      <button
+                        className="btn-sec"
+                        onClick={gravarTrecho}
+                        disabled={transcrevendo || carregando}
+                      >
+                        {gravando
+                          ? "Parar e transcrever"
+                          : transcrevendo
+                            ? "Transcrevendo…"
+                            : "Gravar trecho"}
+                      </button>
+                    )}
+                    <button
+                      className="btn-sec"
+                      onClick={limpar}
+                      disabled={carregando}
+                    >
+                      Limpar
+                    </button>
+                  </div>
+                  {storyId && (
+                    <p
+                      className="ajuda"
+                      style={{ marginTop: 10, marginBottom: 0 }}
+                    >
+                      Editando a história #{storyId}.
+                    </p>
+                  )}
+                  {erro && <p className="erro">{erro}</p>}
+                </section>
+
+                {resultado && (
+                  <>
+                    <section className="bloco">
+                      <div className="bloco-cabeca">
+                        <h2 className="bloco-titulo">História</h2>
+                        <div className="bloco-acoes">
+                          {resultado.storyId && !editandoStory && (
+                            <button
+                              className="btn-min"
+                              onClick={() => {
+                                setEdWho(resultado.story.who);
+                                setEdWhat(resultado.story.what);
+                                setEdWhy(resultado.story.why);
+                                setEditandoStory(true);
+                              }}
+                            >
+                              Editar
+                            </button>
+                          )}
+                          {comAssistente && !editandoStory && (
+                            <BotaoOuvir
+                              id="historia"
+                              texto={frase(resultado.story)}
+                              fala={fala}
+                            />
+                          )}
+                        </div>
+                      </div>
+
+                      {editandoStory ? (
+                        <div className="form-edicao">
+                          <div className="form-campo">
+                            <label>Quem faz</label>
+                            <input
+                              value={edWho}
+                              onChange={(e) => setEdWho(e.target.value)}
+                            />
+                          </div>
+                          <div className="form-campo">
+                            <label>O que precisa ser feito</label>
+                            <input
+                              value={edWhat}
+                              onChange={(e) => setEdWhat(e.target.value)}
+                            />
+                          </div>
+                          <div className="form-campo">
+                            <label>Para quê ou para quem</label>
+                            <input
+                              value={edWhy}
+                              onChange={(e) => setEdWhy(e.target.value)}
+                            />
+                          </div>
+                          <div className="linha-botoes">
+                            <button
+                              className="btn"
+                              onClick={salvarStory}
+                              disabled={salvandoStory}
+                            >
+                              {salvandoStory ? "Salvando…" : "Salvar correção"}
+                            </button>
+                            <button
+                              className="btn-sec"
+                              onClick={() => setEditandoStory(false)}
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="story-campos">
+                          <div className="story-campo">
+                            <span className="story-rotulo">Como</span>
+                            <span className="story-valor">
+                              {resultado.story.who || "—"}
+                            </span>
+                          </div>
+                          <div className="story-campo">
+                            <span className="story-rotulo">eu quero</span>
+                            <span className="story-valor">
+                              {resultado.story.what || "—"}
+                            </span>
+                          </div>
+                          <div className="story-campo">
+                            <span className="story-rotulo">para</span>
+                            <span className="story-valor">
+                              {resultado.story.why || "—"}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    {comAssistente && (
+                      <>
+                        <section className="bloco">
+                          <div className="bloco-cabeca">
+                            <h2 className="bloco-titulo">Pontos de atenção</h2>
+                            <span className="contador">
+                              {resultado.violations.length}
+                            </span>
+                            <div className="bloco-acoes">
+                              <BotaoOuvir
+                                id="viol"
+                                texto={falaViolacoes(resultado.violations)}
+                                fala={fala}
+                              />
+                            </div>
+                          </div>
+                          {resultado.violations.length === 0 ? (
+                            <p className="ajuda">
+                              A história passou nas verificações de template,
+                              clareza e testabilidade.
+                            </p>
+                          ) : (
+                            <ul className="lista-violacoes">
+                              {resultado.violations.map((v, i) => (
+                                <li key={i} className={`violacao ${v.origem}`}>
+                                  <div className="violacao-topo">
+                                    <span className="violacao-criterio">
+                                      {v.criterio}
+                                    </span>
+                                    <span className="violacao-origem">
+                                      {v.origem === "regra" ? "regra" : "IA"}
+                                    </span>
+                                  </div>
+                                  <p className="violacao-msg">{v.mensagem}</p>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </section>
+
+                        <section className="bloco">
+                          <div className="bloco-cabeca">
+                            <h2 className="bloco-titulo">
+                              Critérios de aceite
+                            </h2>
+                            <div className="bloco-acoes">
+                              <BotaoOuvir
+                                id="crit"
+                                texto={falaCriterios(
+                                  resultado.acceptanceCriteria,
+                                )}
+                                fala={fala}
+                              />
+                            </div>
+                          </div>
+                          {resultado.acceptanceCriteria.length === 0 ? (
+                            <p className="ajuda">
+                              Nenhum critério sugerido para esta história.
+                            </p>
+                          ) : (
+                            <ul className="lista-criterios">
+                              {resultado.acceptanceCriteria.map((c, i) => (
+                                <li key={i}>{c}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </section>
+                      </>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+
+            {/* ---------- SESSÃO ---------- */}
+            {vista === "sessao" && (
+              <>
+                <section className="bloco">
+                  <div className="bloco-cabeca">
+                    <h2 className="bloco-titulo">Sessão do experimento</h2>
+                    <div className="bloco-acoes">
+                      <button
+                        className="btn-min"
+                        onClick={() => setVista("daily")}
+                      >
+                        Voltar
+                      </button>
+                    </div>
+                  </div>
+                  <p className="ajuda">
+                    Cada sessão separa as histórias de um participante em uma
+                    das duas condições comparadas no estudo.
+                  </p>
+                  <div className="grade-campos">
+                    <div className="form-campo">
+                      <label htmlFor="part">Participante</label>
+                      <input
+                        id="part"
+                        placeholder="P01"
+                        value={participante}
+                        onChange={(e) => setParticipante(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-campo">
+                      <label htmlFor="cond">Condição</label>
+                      <select
+                        id="cond"
+                        value={condicao}
+                        onChange={(e) =>
+                          setCondicao(e.target.value as typeof condicao)
+                        }
+                      >
+                        <option value="com_assistente">Com assistente</option>
+                        <option value="sem_assistente">
+                          Sem assistente (controle)
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="linha-botoes" style={{ marginTop: 14 }}>
+                    <button className="btn" onClick={iniciarSessao}>
+                      Iniciar sessão
+                    </button>
+                  </div>
+                  {sessao && (
+                    <p
+                      className="ajuda"
+                      style={{ marginTop: 12, marginBottom: 0 }}
+                    >
+                      Em andamento: {sessao.participante} —{" "}
+                      {sessao.condicao === "sem_assistente"
+                        ? "sem assistente"
+                        : "com assistente"}
+                      . Iniciar outra sessão começa um backlog novo.
+                    </p>
+                  )}
+                  {erro && <p className="erro">{erro}</p>}
+                </section>
+
+                <section className="bloco">
+                  <div className="bloco-cabeca">
+                    <h2 className="bloco-titulo">Dados para análise</h2>
+                  </div>
+                  <p className="ajuda">
+                    Os arquivos saem em CSV, prontos para abrir na planilha.
+                  </p>
+                  <div className="linha-botoes">
+                    <button
+                      className="btn-sec"
+                      onClick={() =>
+                        window.open(`${API}/export/versoes.csv`, "_blank")
+                      }
+                    >
+                      Baixar versões
+                    </button>
+                    <button
+                      className="btn-sec"
+                      onClick={() =>
+                        window.open(`${API}/export/historias.csv`, "_blank")
+                      }
+                    >
+                      Baixar histórias
+                    </button>
+                  </div>
+                  <p
+                    className="ajuda"
+                    style={{ marginTop: 12, marginBottom: 0 }}
+                  >
+                    Versões traz uma linha por alteração, com as violações
+                    separadas por origem. Histórias traz o resumo final de cada
+                    card.
+                  </p>
+                </section>
+              </>
+            )}
+
+            {/* ---------- CONFIGURAÇÕES ---------- */}
+            {vista === "config" && (
+              <>
+                <div className="linha-botoes" style={{ marginBottom: 16 }}>
+                  <button className="btn-min" onClick={() => setVista("daily")}>
+                    Voltar
+                  </button>
+                </div>
+                <JiraConfig onMudou={recarregarJira} />
+              </>
+            )}
+          </div>
+        </main>
       </div>
     </div>
   );

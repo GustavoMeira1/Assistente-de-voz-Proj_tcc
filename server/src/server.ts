@@ -8,6 +8,8 @@ import { segmentarDemandas } from "./segmentador.js";
 import { transcrever } from "./whisper.js";
 import { inicializarBanco } from "./db.js";
 import { gerarCsvVersoes, gerarCsvHistorias } from "./exportador.js";
+import { configPublica, salvarConfig } from "./jiraConfig.js";
+import { criarIssueJira, testarConexaoJira } from "./jira.js";
 import {
   garantirSessao,
   sessaoAtiva,
@@ -19,6 +21,8 @@ import {
   editarHistoria,
   excluirHistoria,
   buscarHistoriaComVersoes,
+  buscarHistoriaParaEnvio,
+  registrarJiraKey,
 } from "./repository.js";
 import type { RefineResult, UserStory, Violation } from "./types.js";
 
@@ -220,7 +224,6 @@ app.put("/stories/:id", async (request, reply) => {
   return { ok: true };
 });
 
-// Exclui uma história (para remover duplicatas ou cards indevidos).
 app.delete("/stories/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
   const resultado = excluirHistoria(Number(id));
@@ -257,6 +260,51 @@ app.get("/export/historias.csv", async (request, reply) => {
     .header("Content-Type", "text/csv; charset=utf-8")
     .header("Content-Disposition", 'attachment; filename="historias.csv"')
     .send(csv);
+});
+
+/* ===================== INTEGRAÇÃO COM O JIRA (opcional) ===================== */
+
+// Lê a configuração atual (sem expor o token).
+app.get("/config/jira", async () => {
+  return configPublica();
+});
+
+// Salva a configuração. Token em branco mantém o token já salvo.
+app.post("/config/jira", async (request) => {
+  const body = request.body as {
+    ativo?: boolean;
+    baseUrl?: string;
+    email?: string;
+    token?: string;
+    projectKey?: string;
+    issueType?: string;
+  };
+  salvarConfig(body ?? {});
+  return configPublica();
+});
+
+// Testa a conexão sem criar card.
+app.post("/config/jira/testar", async () => {
+  const r = await testarConexaoJira();
+  return r;
+});
+
+// Envia uma história do backlog para o Jira, criando um card lá.
+app.post("/stories/:id/jira", async (request, reply) => {
+  const { id } = request.params as { id: string };
+  const dados = buscarHistoriaParaEnvio(Number(id));
+  if (!dados)
+    return reply.status(404).send({ erro: "História não encontrada." });
+
+  const r = await criarIssueJira(
+    dados.story,
+    dados.criterios,
+    dados.entradaOriginal,
+  );
+  if (!r.ok) return reply.status(400).send({ erro: r.erro });
+
+  if (r.key) registrarJiraKey(Number(id), r.key);
+  return { ok: true, key: r.key, url: r.url };
 });
 
 const start = async () => {

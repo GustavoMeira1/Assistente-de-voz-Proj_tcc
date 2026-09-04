@@ -1,6 +1,17 @@
 import { db } from "./db.js";
 import type { UserStory, Violation } from "./types.js";
 
+// Garante a coluna jira_key na tabela stories (migração leve e idempotente).
+// Se a coluna já existir, o SQLite lança erro e nós ignoramos.
+function garantirColunaJira(): void {
+  try {
+    db.prepare("ALTER TABLE stories ADD COLUMN jira_key TEXT").run();
+  } catch {
+    /* coluna já existe — segue normalmente */
+  }
+}
+garantirColunaJira();
+
 export function iniciarSessao(participante: string, condicao: string): number {
   const info = db
     .prepare(
@@ -94,7 +105,7 @@ export function listarVersoes(storyId: number) {
 export function listarHistorias(sessionId: number) {
   return db
     .prepare(
-      `SELECT id, who, what, why, criada_em
+      `SELECT id, who, what, why, criada_em, jira_key
        FROM stories WHERE session_id = ? ORDER BY id DESC`,
     )
     .all(sessionId);
@@ -146,15 +157,62 @@ export function editarHistoria(
   return { ok: true };
 }
 
-// Exclui uma história e todas as suas versões (para limpar duplicatas).
 export function excluirHistoria(storyId: number): { ok: boolean } {
   const existe = db.prepare("SELECT id FROM stories WHERE id = ?").get(storyId);
   if (!existe) return { ok: false };
 
   db.prepare("DELETE FROM story_versions WHERE story_id = ?").run(storyId);
-  db.prepare("DELETE FROM metrics WHERE story_id = ?").run(storyId);
+  try {
+    db.prepare("DELETE FROM metrics WHERE story_id = ?").run(storyId);
+  } catch {
+    /* tabela metrics pode não ter registros/estrutura usada */
+  }
   db.prepare("DELETE FROM stories WHERE id = ?").run(storyId);
   return { ok: true };
+}
+
+// Busca uma história (para envio ao Jira) com seus critérios mais recentes.
+export function buscarHistoriaParaEnvio(storyId: number) {
+  const h = db
+    .prepare("SELECT id, who, what, why, jira_key FROM stories WHERE id = ?")
+    .get(storyId) as
+    | {
+        id: number;
+        who: string;
+        what: string;
+        why: string;
+        jira_key: string | null;
+      }
+    | undefined;
+  if (!h) return null;
+
+  const ultima = db
+    .prepare(
+      `SELECT criterios_json, entrada_original FROM story_versions
+       WHERE story_id = ? ORDER BY id DESC LIMIT 1`,
+    )
+    .get(storyId) as
+    | { criterios_json: string; entrada_original: string }
+    | undefined;
+
+  let criterios: string[] = [];
+  try {
+    criterios = JSON.parse(ultima?.criterios_json ?? "[]");
+  } catch {
+    criterios = [];
+  }
+
+  return {
+    story: { who: h.who, what: h.what, why: h.why },
+    jiraKey: h.jira_key,
+    criterios,
+    entradaOriginal: ultima?.entrada_original ?? "",
+  };
+}
+
+// Grava a chave do card criado no Jira (ex.: TCC-42).
+export function registrarJiraKey(storyId: number, key: string): void {
+  db.prepare("UPDATE stories SET jira_key = ? WHERE id = ?").run(key, storyId);
 }
 
 export function buscarHistoriaComVersoes(storyId: number) {
