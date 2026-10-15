@@ -1,8 +1,12 @@
-// Uma user story decomposta em suas três partes.
+// Uma user story decomposta em suas partes.
+// IMPORTANTE: "who" é a PERSONA (o tipo de usuário do sistema que se
+// beneficia, ex.: "aluno"), e não o membro da equipe que executa a tarefa.
+// Quem executa fica em "responsavel".
 export interface UserStory {
-  who: string; // o perfil: "Como [quem]"
+  who: string; // persona: "Como [tipo de usuário]"
   what: string; // a capacidade: "eu quero [o quê]"
-  why: string; // o benefício: "para [por quê]"
+  why: string; // o benefício: "para [por quê]" (sem a palavra "para")
+  responsavel?: string; // membro da equipe que vai executar (ex.: "Larissa")
 }
 
 // Uma violação detectada em uma história.
@@ -14,7 +18,7 @@ export interface Violation {
 
 // O que o LLM retorna após analisar a frase do usuário.
 export interface LlmAnalysis {
-  story: UserStory; // a frase quebrada em who/what/why
+  story: UserStory; // a frase quebrada em persona/what/why (+ responsável)
   violations: Violation[]; // problemas semânticos que o LLM percebeu
   acceptanceCriteria: string[]; // critérios de aceite sugeridos
 }

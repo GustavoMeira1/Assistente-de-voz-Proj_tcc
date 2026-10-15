@@ -1,16 +1,30 @@
 import { db } from "./db.js";
+import { aplicarRegras } from "./rules.js";
+import { limparStory } from "./historia.js";
 import type { UserStory, Violation } from "./types.js";
 
-// Garante a coluna jira_key na tabela stories (migração leve e idempotente).
-// Se a coluna já existir, o SQLite lança erro e nós ignoramos.
-function garantirColunaJira(): void {
-  try {
-    db.prepare("ALTER TABLE stories ADD COLUMN jira_key TEXT").run();
-  } catch {
-    /* coluna já existe — segue normalmente */
+// Acrescenta uma coluna a uma tabela, se ela ainda não existir.
+function garantirColuna(tabela: string, coluna: string, tipo: string): void {
+  const colunas = db.prepare(`PRAGMA table_info(${tabela})`).all() as {
+    name: string;
+  }[];
+  if (!colunas.some((c) => c.name === coluna)) {
+    db.prepare(`ALTER TABLE ${tabela} ADD COLUMN ${coluna} ${tipo}`).run();
   }
 }
-garantirColunaJira();
+
+// Migrações leves do banco. IMPORTANTE: deve ser chamada DEPOIS de
+// inicializarBanco(), para que as tabelas já existam. Funciona tanto em banco
+// novo quanto em banco antigo.
+export function migrarBanco(): void {
+  try {
+    garantirColuna("stories", "jira_key", "TEXT");
+    garantirColuna("stories", "responsavel", "TEXT");
+    garantirColuna("story_versions", "responsavel", "TEXT");
+  } catch (e) {
+    console.error("Falha ao migrar o banco:", e);
+  }
+}
 
 export function iniciarSessao(participante: string, condicao: string): number {
   const info = db
@@ -52,14 +66,22 @@ export function garantirSessao(): { id: number; condicao: string } {
 export function criarHistoria(sessionId: number, story: UserStory): number {
   const info = db
     .prepare(
-      `INSERT INTO stories (session_id, who, what, why, criada_em)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO stories (session_id, who, what, why, responsavel, criada_em)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(sessionId, story.who, story.what, story.why, new Date().toISOString());
+    .run(
+      sessionId,
+      story.who,
+      story.what,
+      story.why,
+      story.responsavel ?? "",
+      new Date().toISOString(),
+    );
   return Number(info.lastInsertRowid);
 }
 
-export function salvarVersao(
+// Grava uma versão da história e atualiza o estado atual do card.
+function inserirVersao(
   storyId: number,
   entradaOriginal: string,
   story: UserStory,
@@ -71,15 +93,16 @@ export function salvarVersao(
 
   db.prepare(
     `INSERT INTO story_versions
-       (story_id, entrada_original, who, what, why, violacoes_json, criterios_json,
-        total_violacoes, violacoes_regra, violacoes_llm, criada_em)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (story_id, entrada_original, who, what, why, responsavel, violacoes_json,
+        criterios_json, total_violacoes, violacoes_regra, violacoes_llm, criada_em)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     storyId,
     entradaOriginal,
     story.who,
     story.what,
     story.why,
+    story.responsavel ?? "",
     JSON.stringify(violations),
     JSON.stringify(acceptanceCriteria),
     violations.length,
@@ -88,12 +111,19 @@ export function salvarVersao(
     new Date().toISOString(),
   );
 
-  db.prepare(`UPDATE stories SET who = ?, what = ?, why = ? WHERE id = ?`).run(
-    story.who,
-    story.what,
-    story.why,
-    storyId,
-  );
+  db.prepare(
+    `UPDATE stories SET who = ?, what = ?, why = ?, responsavel = ? WHERE id = ?`,
+  ).run(story.who, story.what, story.why, story.responsavel ?? "", storyId);
+}
+
+export function salvarVersao(
+  storyId: number,
+  entradaOriginal: string,
+  story: UserStory,
+  violations: Violation[],
+  acceptanceCriteria: string[],
+): void {
+  inserirVersao(storyId, entradaOriginal, story, violations, acceptanceCriteria);
 }
 
 export function listarVersoes(storyId: number) {
@@ -105,56 +135,63 @@ export function listarVersoes(storyId: number) {
 export function listarHistorias(sessionId: number) {
   return db
     .prepare(
-      `SELECT id, who, what, why, criada_em, jira_key
+      `SELECT id, who, what, why, responsavel, criada_em, jira_key
        FROM stories WHERE session_id = ? ORDER BY id DESC`,
     )
     .all(sessionId);
 }
 
-export function listarCardsResumidos(
-  sessionId: number,
-): { id: number; who: string; what: string; why: string }[] {
+export function listarCardsResumidos(sessionId: number): {
+  id: number;
+  who: string;
+  what: string;
+  why: string;
+  responsavel: string;
+}[] {
   return db
     .prepare(
-      `SELECT id, who, what, why FROM stories WHERE session_id = ? ORDER BY id ASC`,
+      `SELECT id, who, what, why, COALESCE(responsavel, '') AS responsavel
+       FROM stories WHERE session_id = ? ORDER BY id ASC`,
     )
-    .all(sessionId) as { id: number; who: string; what: string; why: string }[];
+    .all(sessionId) as {
+    id: number;
+    who: string;
+    what: string;
+    why: string;
+    responsavel: string;
+  }[];
 }
 
+// Edição manual: grava uma nova versão marcada como "[edição manual]".
+// As regras determinísticas são reaplicadas à versão editada, para que o
+// histórico mostre o efeito da correção (antes e depois). Os critérios de
+// aceite da última versão são mantidos. Alertas do LLM não são recalculados
+// aqui; para isso, a história pode ser reanalisada no modo individual.
 export function editarHistoria(
   storyId: number,
-  story: UserStory,
-): { ok: boolean } {
+  entrada: Partial<UserStory>,
+): { ok: boolean; story?: UserStory; violations?: Violation[] } {
   const existe = db.prepare("SELECT id FROM stories WHERE id = ?").get(storyId);
   if (!existe) return { ok: false };
 
-  db.prepare(
-    `INSERT INTO story_versions
-       (story_id, entrada_original, who, what, why, violacoes_json, criterios_json,
-        total_violacoes, violacoes_regra, violacoes_llm, criada_em)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    storyId,
-    "[edição manual]",
-    story.who,
-    story.what,
-    story.why,
-    "[]",
-    "[]",
-    0,
-    0,
-    0,
-    new Date().toISOString(),
-  );
+  const story = limparStory(entrada);
+  const violations = aplicarRegras(story);
 
-  db.prepare(`UPDATE stories SET who = ?, what = ?, why = ? WHERE id = ?`).run(
-    story.who,
-    story.what,
-    story.why,
-    storyId,
-  );
+  const ultima = db
+    .prepare(
+      `SELECT criterios_json FROM story_versions
+       WHERE story_id = ? ORDER BY id DESC LIMIT 1`,
+    )
+    .get(storyId) as { criterios_json: string } | undefined;
+  let criterios: string[] = [];
+  try {
+    criterios = JSON.parse(ultima?.criterios_json ?? "[]");
+  } catch {
+    criterios = [];
+  }
 
-  return { ok: true };
+  inserirVersao(storyId, "[edição manual]", story, violations, criterios);
+  return { ok: true, story, violations };
 }
 
 export function excluirHistoria(storyId: number): { ok: boolean } {
@@ -165,22 +202,26 @@ export function excluirHistoria(storyId: number): { ok: boolean } {
   try {
     db.prepare("DELETE FROM metrics WHERE story_id = ?").run(storyId);
   } catch {
-    /* tabela metrics pode não ter registros/estrutura usada */
+    /* tabela metrics pode não existir/estar vazia */
   }
   db.prepare("DELETE FROM stories WHERE id = ?").run(storyId);
   return { ok: true };
 }
 
-// Busca uma história (para envio ao Jira) com seus critérios mais recentes.
 export function buscarHistoriaParaEnvio(storyId: number) {
   const h = db
-    .prepare("SELECT id, who, what, why, jira_key FROM stories WHERE id = ?")
+    .prepare(
+      `SELECT id, who, what, why, COALESCE(responsavel, '') AS responsavel,
+              jira_key
+       FROM stories WHERE id = ?`,
+    )
     .get(storyId) as
     | {
         id: number;
         who: string;
         what: string;
         why: string;
+        responsavel: string;
         jira_key: string | null;
       }
     | undefined;
@@ -203,14 +244,13 @@ export function buscarHistoriaParaEnvio(storyId: number) {
   }
 
   return {
-    story: { who: h.who, what: h.what, why: h.why },
+    story: { who: h.who, what: h.what, why: h.why, responsavel: h.responsavel },
     jiraKey: h.jira_key,
     criterios,
     entradaOriginal: ultima?.entrada_original ?? "",
   };
 }
 
-// Grava a chave do card criado no Jira (ex.: TCC-42).
 export function registrarJiraKey(storyId: number, key: string): void {
   db.prepare("UPDATE stories SET jira_key = ? WHERE id = ?").run(key, storyId);
 }
@@ -223,7 +263,8 @@ export function buscarHistoriaComVersoes(storyId: number) {
 
   const versoes = db
     .prepare(
-      `SELECT id, entrada_original, who, what, why, violacoes_json,
+      `SELECT id, entrada_original, who, what, why,
+              COALESCE(responsavel, '') AS responsavel, violacoes_json,
               criterios_json, total_violacoes, violacoes_regra,
               violacoes_llm, criada_em
        FROM story_versions WHERE story_id = ? ORDER BY id ASC`,

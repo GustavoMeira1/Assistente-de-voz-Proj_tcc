@@ -26,6 +26,7 @@ export function gerarCsvVersoes(): string {
          sv.who                AS who,
          sv.what               AS what,
          sv.why                AS why,
+         COALESCE(sv.responsavel, '') AS responsavel,
          sv.total_violacoes    AS total_violacoes,
          sv.violacoes_regra    AS violacoes_regra,
          sv.violacoes_llm      AS violacoes_llm,
@@ -46,6 +47,7 @@ export function gerarCsvVersoes(): string {
     "who",
     "what",
     "why",
+    "responsavel",
     "total_violacoes",
     "violacoes_regra",
     "violacoes_llm",
@@ -62,6 +64,7 @@ export function gerarCsvVersoes(): string {
       l.who,
       l.what,
       l.why,
+      l.responsavel,
       l.total_violacoes,
       l.violacoes_regra,
       l.violacoes_llm,
@@ -84,6 +87,7 @@ export function gerarCsvHistorias(): string {
          st.who          AS who_final,
          st.what         AS what_final,
          st.why          AS why_final,
+         COALESCE(st.responsavel, '') AS responsavel_final,
          COUNT(sv.id)                              AS num_versoes,
          MIN(sv.total_violacoes)                   AS violacoes_min,
          MAX(sv.total_violacoes)                   AS violacoes_max,
@@ -91,7 +95,7 @@ export function gerarCsvHistorias(): string {
             WHERE story_id = st.id ORDER BY id ASC  LIMIT 1) AS violacoes_inicio,
          (SELECT total_violacoes FROM story_versions
             WHERE story_id = st.id ORDER BY id DESC LIMIT 1) AS violacoes_fim,
-         -- completude final: quantos dos 3 campos (who/what/why) estão preenchidos
+         -- completude final: quantos dos 3 campos (persona/what/why) estão preenchidos
          ((CASE WHEN TRIM(COALESCE(st.who,''))  <> '' THEN 1 ELSE 0 END) +
           (CASE WHEN TRIM(COALESCE(st.what,'')) <> '' THEN 1 ELSE 0 END) +
           (CASE WHEN TRIM(COALESCE(st.why,''))  <> '' THEN 1 ELSE 0 END)) AS completude_final
@@ -110,6 +114,7 @@ export function gerarCsvHistorias(): string {
     "who_final",
     "what_final",
     "why_final",
+    "responsavel_final",
     "num_versoes",
     "violacoes_inicio",
     "violacoes_fim",
@@ -124,6 +129,7 @@ export function gerarCsvHistorias(): string {
       l.who_final,
       l.what_final,
       l.why_final,
+      l.responsavel_final,
       l.num_versoes,
       l.violacoes_inicio,
       l.violacoes_fim,

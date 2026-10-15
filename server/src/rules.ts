@@ -41,7 +41,8 @@ function verificarTemplate(story: UserStory): Violation[] {
     violacoes.push({
       criterio: "Template - Perfil (who)",
       origem: "regra",
-      mensagem: "A história não especifica o perfil ('Como [quem]').",
+      mensagem:
+        "A história não especifica a persona ('Como [tipo de usuário]').",
     });
   }
   if (!story.what.trim()) {
@@ -114,6 +115,50 @@ function verificarTermosVagos(story: UserStory): Violation[] {
   }));
 }
 
+// Papéis genéricos de usuário que podem aparecer com inicial maiúscula sem
+// serem nomes de pessoas (comparados sem acento e em minúsculas).
+const PAPEIS_GENERICOS = [
+  "usuario", "usuaria", "usuarios", "cliente", "clientes", "aluno", "aluna",
+  "alunos", "estudante", "estudantes", "professor", "professora", "gerente",
+  "gestor", "gestora", "administrador", "administradora", "coordenador",
+  "coordenadora", "coordenacao", "visitante", "comprador", "vendedor",
+  "paciente", "medico", "medica", "atendente", "operador", "operadora",
+  "funcionario", "funcionaria", "colaborador", "colaboradora", "leitor",
+  "leitora", "bibliotecario", "bibliotecaria", "secretaria", "diretor",
+  "diretora", "desenvolvedor", "analista", "equipe", "time",
+];
+
+// Regra 5: o papel parece ser uma pessoa da equipe, e não um tipo de usuário?
+// No QUS, o papel de uma user story deve ser um tipo de usuário do sistema.
+// Usar o nome de quem executa a tarefa a transforma em tarefa atribuída.
+// Heurística: (a) o papel coincide com o responsável; ou (b) o papel tem até
+// três palavras, todas com inicial maiúscula, e não é um papel genérico.
+function verificarPapelNomeProprio(story: UserStory): Violation[] {
+  const papel = story.who.trim();
+  if (!papel) return []; // ausência já é tratada pela regra de template
+
+  const responsavel = (story.responsavel ?? "").trim();
+  const igualAoResponsavel =
+    responsavel.length > 0 && normalizar(papel) === normalizar(responsavel);
+
+  const palavras = papel.split(/\s+/);
+  const pareceNome =
+    palavras.length <= 3 &&
+    palavras.every((p) => /^\p{Lu}/u.test(p)) &&
+    !PAPEIS_GENERICOS.includes(normalizar(palavras[0]));
+
+  if (igualAoResponsavel || pareceNome) {
+    return [
+      {
+        criterio: "Papel - Nome de pessoa (QUS: bem formada)",
+        origem: "regra",
+        mensagem: `O papel '${papel}' parece ser uma pessoa da equipe, e não um tipo de usuário do sistema. Quem executa a tarefa deve ir no campo Responsável.`,
+      },
+    ];
+  }
+  return [];
+}
+
 // Executa todas as regras e junta as violações.
 export function aplicarRegras(story: UserStory): Violation[] {
   return [
@@ -121,5 +166,6 @@ export function aplicarRegras(story: UserStory): Violation[] {
     ...verificarAtomicidade(story),
     ...verificarTamanho(story),
     ...verificarTermosVagos(story),
+    ...verificarPapelNomeProprio(story),
   ];
 }

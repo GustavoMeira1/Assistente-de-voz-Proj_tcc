@@ -26,8 +26,9 @@ function adf(paragrafos: string[]) {
 // Monta o resumo (título) do card a partir da história.
 function montarResumo(story: UserStory): string {
   const base = story.what?.trim() || "Demanda sem descrição";
-  const quem = story.who?.trim();
-  const titulo = quem ? `${quem}: ${base}` : base;
+  // Título: a capacidade, com o responsável entre colchetes quando houver.
+  const quem = story.responsavel?.trim();
+  const titulo = quem ? `[${quem}] ${base}` : base;
   // O campo summary do Jira tem limite de 255 caracteres.
   return titulo.length > 250 ? titulo.slice(0, 247) + "..." : titulo;
 }
@@ -56,6 +57,9 @@ export async function criarIssueJira(
     .filter(Boolean)
     .join(", ");
   if (linhaHistoria) partes.push(linhaHistoria + ".");
+  if (story.responsavel?.trim()) {
+    partes.push(`Responsável: ${story.responsavel.trim()}`);
+  }
 
   if (criterios.length > 0) {
     partes.push("Critérios de aceite:");

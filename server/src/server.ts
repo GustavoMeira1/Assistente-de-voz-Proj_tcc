@@ -5,6 +5,7 @@ import { askOllama, analisarComLlm } from "./ollama.js";
 import { aplicarRegras } from "./rules.js";
 import { decomporSimples } from "./parseSimples.js";
 import { segmentarDemandas } from "./segmentador.js";
+import { limparStory } from "./historia.js";
 import { transcrever } from "./whisper.js";
 import { inicializarBanco } from "./db.js";
 import { gerarCsvVersoes, gerarCsvHistorias } from "./exportador.js";
@@ -23,12 +24,14 @@ import {
   buscarHistoriaComVersoes,
   buscarHistoriaParaEnvio,
   registrarJiraKey,
+  migrarBanco,
 } from "./repository.js";
 import type { RefineResult, UserStory, Violation } from "./types.js";
 
 const app = Fastify({ logger: true });
 
 inicializarBanco();
+migrarBanco(); // adiciona colunas novas (jira_key, responsavel) se faltarem
 
 await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } });
 await app.register(cors, {
@@ -102,7 +105,14 @@ app.post("/refine", async (request, reply) => {
     if (comAssistente) {
       const analise = await analisarComLlm(body.texto);
       story = analise.story;
-      const violacoesRegras = aplicarRegras(analise.story);
+      // Se o LLM não identificou a capacidade, a frase original do usuário é
+      // mantida como capacidade. Assim, as regras determinísticas continuam
+      // avaliando o texto (atomicidade, termos vagos), em vez de dependerem da
+      // extração feita pelo LLM. É o mesmo comportamento da decomposição sem IA.
+      if (!story.what.trim()) {
+        story = limparStory({ ...story, what: body.texto });
+      }
+      const violacoesRegras = aplicarRegras(story);
       violations = [...violacoesRegras, ...analise.violations];
       acceptanceCriteria = analise.acceptanceCriteria;
     } else {
@@ -210,18 +220,25 @@ app.post("/refine-daily", async (request, reply) => {
 
 app.put("/stories/:id", async (request, reply) => {
   const { id } = request.params as { id: string };
-  const body = request.body as { who?: string; what?: string; why?: string };
+  const body = request.body as {
+    who?: string;
+    what?: string;
+    why?: string;
+    responsavel?: string;
+  };
 
   const resultado = editarHistoria(Number(id), {
     who: body.who ?? "",
     what: body.what ?? "",
     why: body.why ?? "",
+    responsavel: body.responsavel ?? "",
   });
 
   if (!resultado.ok) {
     return reply.status(404).send({ erro: "História não encontrada." });
   }
-  return { ok: true };
+  // Devolve a história limpa e os alertas das regras recalculados.
+  return { ok: true, story: resultado.story, violations: resultado.violations };
 });
 
 app.delete("/stories/:id", async (request, reply) => {

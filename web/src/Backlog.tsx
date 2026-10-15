@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 
 interface HistoriaResumo {
   id: number;
-  who: string;
+  who: string; // persona
+  responsavel?: string | null;
   what: string;
   why: string;
   criada_em: string;
@@ -12,7 +13,8 @@ interface HistoriaResumo {
 export interface Versao {
   id: number;
   entrada_original: string;
-  who: string;
+  who: string; // persona
+  responsavel?: string;
   what: string;
   why: string;
   violacoes_json: string;
@@ -131,7 +133,16 @@ export function Backlog({
                 <button className="item-abrir" onClick={() => abrir(h.id)}>
                   <span className="item-meta">
                     <span className="item-id">#{h.id}</span>
-                    {h.who && <span className="item-quem">{h.who}</span>}
+                    {h.responsavel && (
+                      <span className="item-quem" title="Responsável">
+                        {h.responsavel}
+                      </span>
+                    )}
+                    {h.who && (
+                      <span className="item-persona" title="Persona">
+                        {h.who}
+                      </span>
+                    )}
                     {h.jira_key && (
                       <span className="selo-jira">{h.jira_key}</span>
                     )}

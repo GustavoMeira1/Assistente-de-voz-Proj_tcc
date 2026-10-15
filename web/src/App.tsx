@@ -6,9 +6,10 @@ import { Backlog, type Versao } from "./Backlog";
 import { JiraConfig } from "./JiraConfig";
 
 interface UserStory {
-  who: string;
+  who: string; // persona: tipo de usuário do sistema
   what: string;
   why: string;
+  responsavel?: string; // membro da equipe que executa
 }
 
 interface Violation {
@@ -37,15 +38,44 @@ type Vista = "daily" | "historia" | "sessao" | "config";
 
 const API = "http://localhost:3333";
 
+/* ---------- Helpers de texto ---------- */
+
+// Histórias antigas podem ter o benefício gravado já com "para" no início.
+function semPara(t: string): string {
+  return (t ?? "").replace(/^\s*(para|pra)\s+/i, "").trim();
+}
+
+// Destaca os trechos "[definir valor]" que o LLM deixa nos critérios.
+function CriterioTexto({ texto }: { texto: string }) {
+  const partes = texto.split(/(\[definir valor\])/gi);
+  return (
+    <>
+      {partes.map((p, i) =>
+        /^\[definir valor\]$/i.test(p) ? (
+          <mark key={i} className="definir-valor">
+            {p}
+          </mark>
+        ) : (
+          <span key={i}>{p}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 /* ---------- Helpers de fala ---------- */
 
 function frase(story: UserStory): string {
   const partes = [
     story.who ? `Como ${story.who}` : null,
     story.what ? `eu quero ${story.what}` : null,
-    story.why ? `para ${story.why}` : null,
+    story.why ? `para ${semPara(story.why)}` : null,
   ].filter(Boolean);
-  return partes.length ? partes.join(", ") + "." : "A história está vazia.";
+  if (!partes.length) return "A história está vazia.";
+  const resp = story.responsavel?.trim()
+    ? ` Responsável: ${story.responsavel.trim()}.`
+    : "";
+  return partes.join(", ") + "." + resp;
 }
 
 function falaViolacoes(v: Violation[]): string {
@@ -107,12 +137,13 @@ function CartaoDemanda({
   const [editando, setEditando] = useState(false);
   const [who, setWho] = useState(h.story.who);
   const [what, setWhat] = useState(h.story.what);
-  const [why, setWhy] = useState(h.story.why);
+  const [why, setWhy] = useState(semPara(h.story.why));
+  const [responsavel, setResponsavel] = useState(h.story.responsavel ?? "");
   const [salvando, setSalvando] = useState(false);
 
   async function salvar() {
     setSalvando(true);
-    await onSalvar(h.storyId, { who, what, why });
+    await onSalvar(h.storyId, { who, what, why, responsavel });
     setSalvando(false);
     setEditando(false);
   }
@@ -140,16 +171,28 @@ function CartaoDemanda({
       {editando ? (
         <div className="form-edicao">
           <div className="form-campo">
-            <label>Quem faz</label>
-            <input value={who} onChange={(e) => setWho(e.target.value)} />
+            <label>Persona (tipo de usuário)</label>
+            <input
+              value={who}
+              placeholder="ex.: aluno"
+              onChange={(e) => setWho(e.target.value)}
+            />
           </div>
           <div className="form-campo">
-            <label>O que precisa ser feito</label>
+            <label>O que a persona quer fazer</label>
             <input value={what} onChange={(e) => setWhat(e.target.value)} />
           </div>
           <div className="form-campo">
-            <label>Para quê ou para quem</label>
+            <label>Benefício</label>
             <input value={why} onChange={(e) => setWhy(e.target.value)} />
+          </div>
+          <div className="form-campo">
+            <label>Responsável (quem executa)</label>
+            <input
+              value={responsavel}
+              placeholder="ex.: Larissa"
+              onChange={(e) => setResponsavel(e.target.value)}
+            />
           </div>
           <div className="linha-botoes">
             <button className="btn" onClick={salvar} disabled={salvando}>
@@ -164,8 +207,13 @@ function CartaoDemanda({
           {h.story.why && (
             <>
               {" "}
-              <span className="marca">para</span> {h.story.why}
+              <span className="marca">para</span> {semPara(h.story.why)}
             </>
+          )}
+          {h.story.responsavel && (
+            <span className="responsavel-linha">
+              <span className="marca">Responsável:</span> {h.story.responsavel}
+            </span>
           )}
         </p>
       )}
@@ -190,11 +238,16 @@ export default function App() {
   const [transcricao, setTranscricao] = useState("");
   const transcricaoRef = useRef("");
   const processandoRef = useRef(false);
+  // Fila das transcrições de blocos: garante a ordem dos trechos e permite
+  // aguardar todas as transcrições pendentes ao encerrar a reunião.
+  const filaRef = useRef<Promise<void>>(Promise.resolve());
+  const encerrandoRef = useRef(false);
 
   const [editandoStory, setEditandoStory] = useState(false);
   const [edWho, setEdWho] = useState("");
   const [edWhat, setEdWhat] = useState("");
   const [edWhy, setEdWhy] = useState("");
+  const [edResp, setEdResp] = useState("");
   const [salvandoStory, setSalvandoStory] = useState(false);
 
   const [participante, setParticipante] = useState("");
@@ -281,9 +334,18 @@ export default function App() {
     }
   }
 
-  async function aoFecharBloco(audio: Blob) {
+  // Coloca cada bloco de áudio na fila de transcrição, em ordem.
+  function aoFecharBloco(audio: Blob) {
+    const proximo = filaRef.current.then(() => transcreverBloco(audio));
+    filaRef.current = proximo.catch(() => {});
+  }
+
+  async function transcreverBloco(audio: Blob) {
+    const statusOuvindo = () => {
+      if (!encerrandoRef.current) setStatusVivo("Ouvindo a reunião");
+    };
     try {
-      setStatusVivo("Transcrevendo o que foi dito…");
+      if (!encerrandoRef.current) setStatusVivo("Transcrevendo o que foi dito…");
       const form = new FormData();
       form.append("audio", audio, "bloco.webm");
       const r = await fetch(`${API}/transcribe`, {
@@ -302,9 +364,9 @@ export default function App() {
           setTranscricao(transcricaoRef.current);
         }
       }
-      setStatusVivo("Ouvindo a reunião");
+      statusOuvindo();
     } catch {
-      setStatusVivo("Ouvindo a reunião");
+      statusOuvindo();
     }
   }
 
@@ -313,17 +375,26 @@ export default function App() {
   async function alternarDaily() {
     setErro(null);
     if (gravadorVivo.gravandoAoVivo) {
-      gravadorVivo.parar();
       setCarregando(true);
-      setStatusVivo("Fechando a transcrição…");
-      setTimeout(async () => {
+      encerrandoRef.current = true;
+      setStatusVivo("Transcrevendo o trecho final…");
+      try {
+        // 1) espera o último bloco de áudio ser entregue;
+        await gravadorVivo.parar();
+        // 2) espera TODAS as transcrições pendentes terminarem;
+        await filaRef.current;
+        // 3) só então envia a conversa completa ao LLM.
         setStatusVivo("Montando o backlog a partir da conversa…");
         await reprocessar();
         setStatusVivo("Backlog atualizado.");
+      } finally {
+        encerrandoRef.current = false;
         setCarregando(false);
-      }, 3000);
+      }
     } else {
       try {
+        filaRef.current = Promise.resolve();
+        encerrandoRef.current = false;
         transcricaoRef.current = "";
         setTranscricao("");
         setDemandas([]);
@@ -430,8 +501,14 @@ export default function App() {
       body: JSON.stringify(story),
     });
     if (!r.ok) throw new Error("falha ao salvar");
+    // O servidor devolve a história limpa e os alertas das regras recalculados.
+    const d = (await r.json()) as { story?: UserStory; violations?: Violation[] };
     setDemandas((lista) =>
-      lista.map((h) => (h.storyId === id ? { ...h, story } : h)),
+      lista.map((h) =>
+        h.storyId === id
+          ? { ...h, story: d.story ?? story, violations: d.violations ?? h.violations }
+          : h,
+      ),
     );
     setRecarregar((n) => n + 1);
   }
@@ -441,14 +518,28 @@ export default function App() {
     setSalvandoStory(true);
     setErro(null);
     try {
-      const nova: UserStory = { who: edWho, what: edWhat, why: edWhy };
+      const nova: UserStory = {
+        who: edWho,
+        what: edWhat,
+        why: edWhy,
+        responsavel: edResp,
+      };
       const r = await fetch(`${API}/stories/${resultado.storyId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(nova),
       });
       if (!r.ok) throw new Error(`o servidor respondeu ${r.status}`);
-      setResultado({ ...resultado, story: nova });
+      const d = (await r.json()) as {
+        story?: UserStory;
+        violations?: Violation[];
+      };
+      // Após a edição, os alertas exibidos são os das regras, recalculados.
+      setResultado({
+        ...resultado,
+        story: d.story ?? nova,
+        violations: d.violations ?? resultado.violations,
+      });
       setEditandoStory(false);
       setRecarregar((n) => n + 1);
     } catch (e) {
@@ -481,7 +572,12 @@ export default function App() {
     setEditandoStory(false);
     setResultado({
       storyId: id,
-      story: { who: v.who, what: v.what, why: v.why },
+      story: {
+        who: v.who,
+        what: v.what,
+        why: v.why,
+        responsavel: v.responsavel ?? "",
+      },
       violations,
       acceptanceCriteria: criterios,
     });
@@ -758,7 +854,8 @@ export default function App() {
                               onClick={() => {
                                 setEdWho(resultado.story.who);
                                 setEdWhat(resultado.story.what);
-                                setEdWhy(resultado.story.why);
+                                setEdWhy(semPara(resultado.story.why));
+                                setEdResp(resultado.story.responsavel ?? "");
                                 setEditandoStory(true);
                               }}
                             >
@@ -778,24 +875,33 @@ export default function App() {
                       {editandoStory ? (
                         <div className="form-edicao">
                           <div className="form-campo">
-                            <label>Quem faz</label>
+                            <label>Persona (tipo de usuário)</label>
                             <input
                               value={edWho}
+                              placeholder="ex.: aluno"
                               onChange={(e) => setEdWho(e.target.value)}
                             />
                           </div>
                           <div className="form-campo">
-                            <label>O que precisa ser feito</label>
+                            <label>O que a persona quer fazer</label>
                             <input
                               value={edWhat}
                               onChange={(e) => setEdWhat(e.target.value)}
                             />
                           </div>
                           <div className="form-campo">
-                            <label>Para quê ou para quem</label>
+                            <label>Benefício</label>
                             <input
                               value={edWhy}
                               onChange={(e) => setEdWhy(e.target.value)}
+                            />
+                          </div>
+                          <div className="form-campo">
+                            <label>Responsável (quem executa)</label>
+                            <input
+                              value={edResp}
+                              placeholder="ex.: Larissa"
+                              onChange={(e) => setEdResp(e.target.value)}
                             />
                           </div>
                           <div className="linha-botoes">
@@ -831,7 +937,13 @@ export default function App() {
                           <div className="story-campo">
                             <span className="story-rotulo">para</span>
                             <span className="story-valor">
-                              {resultado.story.why || "—"}
+                              {semPara(resultado.story.why) || "—"}
+                            </span>
+                          </div>
+                          <div className="story-campo">
+                            <span className="story-rotulo">Responsável</span>
+                            <span className="story-valor">
+                              {resultado.story.responsavel || "—"}
                             </span>
                           </div>
                         </div>
@@ -898,11 +1010,24 @@ export default function App() {
                               Nenhum critério sugerido para esta história.
                             </p>
                           ) : (
-                            <ul className="lista-criterios">
-                              {resultado.acceptanceCriteria.map((c, i) => (
-                                <li key={i}>{c}</li>
-                              ))}
-                            </ul>
+                            <>
+                              <p className="aviso-sugestao">
+                                Sugestões geradas pela IA, a confirmar com a
+                                equipe. Valores marcados como{" "}
+                                <mark className="definir-valor">
+                                  [definir valor]
+                                </mark>{" "}
+                                não foram mencionados e precisam ser
+                                combinados.
+                              </p>
+                              <ul className="lista-criterios">
+                                {resultado.acceptanceCriteria.map((c, i) => (
+                                  <li key={i}>
+                                    <CriterioTexto texto={c} />
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
                           )}
                         </section>
                       </>

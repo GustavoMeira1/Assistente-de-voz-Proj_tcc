@@ -566,3 +566,38 @@ button, input, textarea, select { font: inherit; color: inherit; }
   .area { padding: 18px 16px 40px; }
   .brand-sub { display: none; }
 }
+/* ---------- Persona, responsável e critérios sugeridos (rodada 2) ---------- */
+
+.item-persona {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0 6px;
+}
+
+.responsavel-linha {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.aviso-sugestao {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  margin: 0 0 10px;
+}
+
+mark.definir-valor {
+  background: var(--rule-soft);
+  color: var(--rule);
+  border-radius: 4px;
+  padding: 0 3px;
+  font-weight: 600;
+}
