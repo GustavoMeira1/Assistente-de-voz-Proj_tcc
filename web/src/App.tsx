@@ -720,7 +720,7 @@ export default function App() {
                     onChange={(e) => setTexto(e.target.value)}
                     placeholder={
                       comAssistente
-                        ? "Cole aqui um trecho da reunião, se preferir não usar o microfone."
+                        ? "Cole aqui um trecho da reunião, se preferir não usar o microfone. Para a transcrição de uma chamada, mantenha o nome de quem fala no início de cada fala, como “[Ana] Hoje vou…” ou “Ana: Hoje vou…”."
                         : "Como [quem], eu quero [o quê], para [benefício]."
                     }
                   />

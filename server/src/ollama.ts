@@ -5,6 +5,11 @@ import type { LlmAnalysis } from "./types.js";
 const OLLAMA_URL = "http://localhost:11434/api/generate";
 const MODEL = "qwen2.5:7b";
 
+// Janela de contexto pedida ao Ollama, em tokens. Sem esse valor, o Ollama usa
+// uma janela padrão definida pela memória da GPU (4096 nesta máquina), que uma
+// reunião longa pode ultrapassar. O modelo suporta até 32768.
+const NUM_CTX = 8192;
+
 // Envia um prompt ao modelo e retorna o texto da resposta.
 // Os parâmetros de amostragem (temperatura etc.) são os padrões do Ollama.
 export async function askOllama(prompt: string): Promise<string> {
@@ -15,6 +20,7 @@ export async function askOllama(prompt: string): Promise<string> {
       model: MODEL,
       prompt: prompt,
       stream: false, // resposta de uma vez só, não em pedaços
+      options: { num_ctx: NUM_CTX },
     }),
   });
 
@@ -32,10 +38,10 @@ function montarPromptAnalise(fraseUsuario: string): string {
 
 Analise a frase do usuário abaixo e faça o seguinte:
 1. Decomponha a frase em:
-   - persona: o TIPO DE USUÁRIO do sistema que se beneficia (ex.: "aluno", "cliente"). Nunca o nome de uma pessoa da equipe.
+   - persona: o tipo de pessoa que vai usar a funcionalidade ou que é afetada pelo problema, conforme mencionado na frase. Escreva só o substantivo, no singular e sem artigo. Nunca o nome de uma pessoa da equipe. Se a frase não mencionar um usuário, deixe vazio.
    - responsavel: o nome da pessoa da equipe que vai executar, se for citado.
    - what: o que a persona quer poder fazer (sem começar com "eu quero").
-   - why: o benefício, SEM começar com a palavra "para".
+   - why: o benefício dito na frase, SEM começar com a palavra "para". Se a frase não disser para que serve, deixe vazio.
    Se alguma parte não existir na frase, deixe a string vazia. NÃO invente conteúdo que o usuário não disse.
 2. Aponte problemas SEMÂNTICOS (não sintáticos), como: o benefício apenas repete a capacidade; o benefício não é um valor real; a história é ambígua; a capacidade não é testável na prática; o papel é uma pessoa e não um tipo de usuário.
 3. Sugira de 1 a 3 critérios de aceite observáveis e testáveis. NÃO invente números (tempos, percentuais, quantidades) que não estejam na frase; quando um critério precisar de um limite não informado, escreva "[definir valor]" no lugar do número.
@@ -49,7 +55,7 @@ Responda APENAS com um objeto JSON válido, sem nenhum texto antes ou depois, se
   "acceptanceCriteria": [ "" ]
 }
 
-Se não houver problemas semânticos, retorne "violations": []. Escreva tudo em português.`;
+Se não houver problemas semânticos, retorne "violations": []. Use só o que foi dito na frase. Escreva tudo em português.`;
 }
 
 // Remove cercas de markdown e texto extra, deixando só o JSON.
@@ -80,11 +86,17 @@ export async function analisarComLlm(
     acceptanceCriteria?: string[];
   };
 
+  // Se o modelo devolver o próprio marcador do prompt (ex.: "<usuário>"), o
+  // campo fica vazio.
+  const semMarcador = (v?: string) => {
+    const t = (v ?? "").trim();
+    return /[<>]/.test(t) ? "" : t;
+  };
   const story = limparStory({
-    who: parsed.persona ?? parsed.story?.who ?? "",
-    what: parsed.what ?? parsed.story?.what ?? "",
-    why: parsed.why ?? parsed.story?.why ?? "",
-    responsavel: parsed.responsavel ?? "",
+    who: semMarcador(parsed.persona ?? parsed.story?.who),
+    what: semMarcador(parsed.what ?? parsed.story?.what),
+    why: semMarcador(parsed.why ?? parsed.story?.why),
+    responsavel: semMarcador(parsed.responsavel),
   });
 
   // Marca cada violação do LLM com origem "llm" (as regras marcam "regra").

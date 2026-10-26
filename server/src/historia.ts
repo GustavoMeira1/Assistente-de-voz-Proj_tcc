@@ -24,7 +24,10 @@ function removerPrefixos(texto: string, prefixos: string[]): string {
 export function limparStory(story: Partial<UserStory>): UserStory {
   const semPontoFinal = (t: string) => t.replace(/[.;,\s]+$/u, "").trim();
   return {
-    who: semPontoFinal(removerPrefixos(story.who ?? "", ["como "])),
+    // Persona sem "Como" e sem artigo: "o médico" vira "médico".
+    who: semPontoFinal(
+      removerPrefixos(story.who ?? "", ["como ", "o ", "a ", "os ", "as ", "um ", "uma "]),
+    ),
     what: semPontoFinal(
       removerPrefixos(story.what ?? "", ["eu quero ", "quero ", "eu gostaria de "]),
     ),
