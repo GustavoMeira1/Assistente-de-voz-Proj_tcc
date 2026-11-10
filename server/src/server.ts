@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import cors from "@fastify/cors";
 import { askOllama, analisarComLlm } from "./ollama.js";
-import { aplicarRegras } from "./rules.js";
+import { aplicarRegrasComSintaxe } from "./rules.js";
 import { decomporSimples } from "./parseSimples.js";
 import { segmentarDemandas } from "./segmentador.js";
 import { limparStory } from "./historia.js";
@@ -112,7 +112,7 @@ app.post("/refine", async (request, reply) => {
       if (!story.what.trim()) {
         story = limparStory({ ...story, what: body.texto });
       }
-      const violacoesRegras = aplicarRegras(story);
+      const violacoesRegras = await aplicarRegrasComSintaxe(story);
       violations = [...violacoesRegras, ...analise.violations];
       acceptanceCriteria = analise.acceptanceCriteria;
     } else {
@@ -178,7 +178,7 @@ app.post("/refine-daily", async (request, reply) => {
 
     const historias = [];
     for (const demanda of demandas) {
-      const violacoesRegras = aplicarRegras(demanda.story);
+      const violacoesRegras = await aplicarRegrasComSintaxe(demanda.story);
 
       let storyId: number;
       let acao: "nova" | "atualizada";
@@ -227,7 +227,7 @@ app.put("/stories/:id", async (request, reply) => {
     responsavel?: string;
   };
 
-  const resultado = editarHistoria(Number(id), {
+  const resultado = await editarHistoria(Number(id), {
     who: body.who ?? "",
     what: body.what ?? "",
     why: body.why ?? "",

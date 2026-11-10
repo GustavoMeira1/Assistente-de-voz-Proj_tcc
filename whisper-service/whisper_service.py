@@ -5,6 +5,9 @@ import os
 
 app = Flask(__name__)
 
+from analise_sintatica import bp_sintaxe
+app.register_blueprint(bp_sintaxe)
+
 # O modelo é carregado UMA vez, quando o serviço sobe — não a cada requisição.
 # É isso que torna cada transcrição rápida depois.
 print("Carregando modelo Whisper... (a primeira vez demora um pouco)")

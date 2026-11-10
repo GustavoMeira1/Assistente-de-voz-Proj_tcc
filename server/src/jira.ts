@@ -52,7 +52,12 @@ export async function criarIssueJira(
   const linhaHistoria = [
     story.who ? `Como ${story.who}` : null,
     story.what ? `eu quero ${story.what}` : null,
-    story.why ? `para ${story.why}` : null,
+    // Benefício dito como motivo ("porque…") não recebe "para" na frente.
+    story.why
+      ? /^(porque|pois)\s/i.test(story.why.trim())
+        ? story.why.trim()
+        : `para ${story.why}`
+      : null,
   ]
     .filter(Boolean)
     .join(", ");

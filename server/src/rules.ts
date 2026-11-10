@@ -1,3 +1,4 @@
+import { analisarCoordenacao, type Coordenacao } from "./sintaxe.js";
 import type { UserStory, Violation } from "./types.js";
 
 // Remove acentos e coloca em minúsculas, para comparação robusta.
@@ -64,9 +65,27 @@ function verificarTemplate(story: UserStory): Violation[] {
 }
 
 // Regra 2: a capacidade parece conter mais de uma coisa? (Atomicidade)
-function verificarAtomicidade(story: UserStory): Violation[] {
+// Com a análise sintática (spaCy), "e"/"ou" só são sinalizados quando ligam
+// duas ações (verbos) ou duas qualidades (adjetivos); "título e autor", que
+// liga substantivos, não é sinalizado. Os demais conectores (";", "&",
+// "além de") continuam sinalizados por texto. Sem a análise sintática
+// (coordenacoes === null), vale a verificação por texto para todos.
+function verificarAtomicidade(
+  story: UserStory,
+  coordenacoes: Coordenacao[] | null,
+): Violation[] {
   const texto = story.what.toLowerCase();
-  const encontrou = CONECTORES.find((c) => texto.includes(c));
+  let encontrou: string | undefined;
+  if (coordenacoes === null) {
+    encontrou = CONECTORES.find((c) => texto.includes(c));
+  } else {
+    const sinalizada = coordenacoes.find((c) => c.sinalizar);
+    encontrou = sinalizada
+      ? ` ${sinalizada.conector} `
+      : CONECTORES.filter((c) => c !== " e " && c !== " ou ").find((c) =>
+          texto.includes(c),
+        );
+  }
   if (encontrou) {
     return [
       {
@@ -160,12 +179,26 @@ function verificarPapelNomeProprio(story: UserStory): Violation[] {
 }
 
 // Executa todas as regras e junta as violações.
-export function aplicarRegras(story: UserStory): Violation[] {
+// Aplica as regras. "coordenacoes" vem da análise sintática; se for omitido
+// ou null, a atomicidade usa a verificação por texto.
+export function aplicarRegras(
+  story: UserStory,
+  coordenacoes: Coordenacao[] | null = null,
+): Violation[] {
   return [
     ...verificarTemplate(story),
-    ...verificarAtomicidade(story),
+    ...verificarAtomicidade(story, coordenacoes),
     ...verificarTamanho(story),
     ...verificarTermosVagos(story),
     ...verificarPapelNomeProprio(story),
   ];
+}
+
+// Versão usada pelo servidor: consulta a análise sintática antes de aplicar
+// as regras.
+export async function aplicarRegrasComSintaxe(
+  story: UserStory,
+): Promise<Violation[]> {
+  const coordenacoes = await analisarCoordenacao(story.what);
+  return aplicarRegras(story, coordenacoes);
 }

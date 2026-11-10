@@ -45,6 +45,16 @@ function semPara(t: string): string {
   return (t ?? "").replace(/^\s*(para|pra)\s+/i, "").trim();
 }
 
+// Benefício dito como motivo ("porque…", "pois…") é exibido com esse
+// conector, e não precedido por "para" (o que geraria "para porque…").
+function conectorBeneficio(why: string): { conector: string; texto: string } {
+  const t = semPara(why);
+  const m = t.match(/^(porque|pois)\s+(.*)$/i);
+  return m
+    ? { conector: m[1].toLowerCase(), texto: m[2] }
+    : { conector: "para", texto: t };
+}
+
 // Destaca os trechos "[definir valor]" que o LLM deixa nos critérios.
 function CriterioTexto({ texto }: { texto: string }) {
   const partes = texto.split(/(\[definir valor\])/gi);
@@ -69,7 +79,9 @@ function frase(story: UserStory): string {
   const partes = [
     story.who ? `Como ${story.who}` : null,
     story.what ? `eu quero ${story.what}` : null,
-    story.why ? `para ${semPara(story.why)}` : null,
+    story.why
+      ? `${conectorBeneficio(story.why).conector} ${conectorBeneficio(story.why).texto}`
+      : null,
   ].filter(Boolean);
   if (!partes.length) return "A história está vazia.";
   const resp = story.responsavel?.trim()
@@ -207,7 +219,10 @@ function CartaoDemanda({
           {h.story.why && (
             <>
               {" "}
-              <span className="marca">para</span> {semPara(h.story.why)}
+              <span className="marca">
+                {conectorBeneficio(h.story.why).conector}
+              </span>{" "}
+              {conectorBeneficio(h.story.why).texto}
             </>
           )}
           {h.story.responsavel && (
@@ -935,9 +950,15 @@ export default function App() {
                             </span>
                           </div>
                           <div className="story-campo">
-                            <span className="story-rotulo">para</span>
+                            <span className="story-rotulo">
+                              {resultado.story.why
+                                ? conectorBeneficio(resultado.story.why).conector
+                                : "para"}
+                            </span>
                             <span className="story-valor">
-                              {semPara(resultado.story.why) || "—"}
+                              {resultado.story.why
+                                ? conectorBeneficio(resultado.story.why).texto
+                                : "—"}
                             </span>
                           </div>
                           <div className="story-campo">

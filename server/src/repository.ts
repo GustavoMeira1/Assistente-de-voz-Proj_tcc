@@ -1,5 +1,5 @@
 import { db } from "./db.js";
-import { aplicarRegras } from "./rules.js";
+import { aplicarRegrasComSintaxe } from "./rules.js";
 import { limparStory } from "./historia.js";
 import type { UserStory, Violation } from "./types.js";
 
@@ -167,15 +167,15 @@ export function listarCardsResumidos(sessionId: number): {
 // histórico mostre o efeito da correção (antes e depois). Os critérios de
 // aceite da última versão são mantidos. Alertas do LLM não são recalculados
 // aqui; para isso, a história pode ser reanalisada no modo individual.
-export function editarHistoria(
+export async function editarHistoria(
   storyId: number,
   entrada: Partial<UserStory>,
-): { ok: boolean; story?: UserStory; violations?: Violation[] } {
+): Promise<{ ok: boolean; story?: UserStory; violations?: Violation[] }> {
   const existe = db.prepare("SELECT id FROM stories WHERE id = ?").get(storyId);
   if (!existe) return { ok: false };
 
   const story = limparStory(entrada);
-  const violations = aplicarRegras(story);
+  const violations = await aplicarRegrasComSintaxe(story);
 
   const ultima = db
     .prepare(
